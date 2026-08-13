@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            g++ \
+            libeigen3-dev \
+            libboost-dev
+
+      - name: Configure
+        run: |
+          cmake -S . -B build/release \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DHIGHVORONOI_BUILD_TESTS=ON \
+            -DHIGHVORONOI_BUILD_EXAMPLES=ON
+
+      - name: Build
+        run: cmake --build build/release --parallel
+
+      - name: Run tests
+        run: |
+          ctest \
+            --test-dir build/release \
+            --output-on-failure
+
+      - name: Run general-position example
+        run: ./build/release/highvoronoi_example_general_position
+
+      - name: Run cubic-grid example
+        run: ./build/release/highvoronoi_example_cubic_grid

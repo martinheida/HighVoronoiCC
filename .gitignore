@@ -1,0 +1,27 @@
+# Build directories
+/build/
+/cmake-build-*/
+
+# Local CMake output in case of accidental in-source builds
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+compile_commands.json
+
+# Compiler output
+*.o
+*.obj
+*.a
+*.so
+*.dll
+*.dylib
+*.exe
+
+# Local development files
+highvoronoicc.code-workspace
+create_highvoronoi_bundles.sh
+
+# Generated ChatGPT source bundles
+chatgpt_sources_*.txt
