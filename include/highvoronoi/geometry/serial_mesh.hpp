@@ -562,6 +562,17 @@ private:
             address);
     }
 
+    /** @brief Return this composite mesh's global infinite-edge list. */
+    [[nodiscard]] const AddressList&
+    infinite_edge_addresses_impl() const override {
+        return infinite_edge_addresses_;
+    }
+
+    /** @brief Register one unbounded edge of the composite mesh. */
+    void register_infinite_edge_impl(Address address) override {
+        infinite_edge_addresses_.push_back(address);
+    }
+
     /**
      * @brief Permanently hide one global internal node from serial public view.
      *
@@ -1024,6 +1035,7 @@ private:
     }
 
     std::shared_ptr<Database> database_;
+    AddressList infinite_edge_addresses_;
     std::vector<ChildBlock> blocks_;
     std::vector<std::uint8_t> hidden_internal_nodes_;
 

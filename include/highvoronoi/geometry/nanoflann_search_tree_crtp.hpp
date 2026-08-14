@@ -99,6 +99,21 @@ public:
             core_,
             this->extended_nodes().safe_copy());
     }
+
+    /**
+     * @brief Rebuild the same nanoflann configuration for another mesh facade.
+     *
+     * Different reordered mesh branches expose different backend index-to-node
+     * mappings, so they require distinct KD indices even though they share the
+     * same underlying node coordinates.
+     */
+    template <class NewMesh>
+    [[nodiscard]] auto rebind(NewMesh& mesh) const {
+        return NanoflannSearchTree<NewMesh, BackendIndex>(
+            mesh,
+            core_->leaf_max_size,
+            core_->build_thread_count);
+    }
     
     [[nodiscard]] SearchData make_backend_data_impl() const {
         const std::size_t dimension =
@@ -237,19 +252,23 @@ private:
     struct BackendCore {
         DatasetAdaptor dataset;
         KDIndex index;
+        std::size_t leaf_max_size;
+        unsigned int build_thread_count;
 
         BackendCore(
             Mesh& mesh,
-            std::size_t leaf_max_size,
-            unsigned int build_thread_count)
+            std::size_t requested_leaf_max_size,
+            unsigned int requested_build_thread_count)
             : dataset(mesh),
               index(
                   static_cast<std::size_t>(mesh.dimension()),
                   dataset,
                   nanoflann::KDTreeSingleIndexAdaptorParams(
-                      leaf_max_size,
+                      requested_leaf_max_size,
                       nanoflann::KDTreeSingleIndexAdaptorFlags::None,
-                      build_thread_count)) {}
+                      requested_build_thread_count)),
+              leaf_max_size(requested_leaf_max_size),
+              build_thread_count(requested_build_thread_count) {}
     };
 
     NanoflannSearchTree(

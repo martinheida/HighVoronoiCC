@@ -14,15 +14,21 @@
  * `compare_meshes()` checks whether two compatible meshes contain the same
  * ordinary nodes and the same primary vertices. Vertex identity is determined
  * by the public signature. For matching signatures, positions are compared
- * with the tolerance
+ * with a tolerance derived from the scale-free vertex variance. The square
+ * root of the maximum variance is multiplied by the local Voronoi radius to
+ * obtain a length. A small floating-point roundoff floor is added so two valid
+ * constructions that differ only by operation order are not reported as
+ * geometrically different.
  *
- *     sqrt(max(variance_1, variance_2)).
- *
- * Both functions return detailed reports. Diagnostic printing is optional and
- * is disabled by default.
+ * Both functions return detailed reports. Mesh comparisons additionally
+ * accumulate the sum, mean, and maximum Euclidean position difference over
+ * all primary vertices with matching signatures. Diagnostic printing is
+ * optional and is disabled by default.
  */
 
 #include <highvoronoi/geometry/raycaster.hpp>
+#include <highvoronoi/geometry/edge_iterator.hpp>
+#include <highvoronoi/detail/edge_hash_table.hpp>
 #include <highvoronoi/geometry/search_tree_factory_crtp.hpp>
 
 #include <algorithm>
@@ -35,6 +41,7 @@
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
+#include <unordered_map>
 #include <vector>
 
 namespace highvoronoi {
@@ -80,6 +87,29 @@ struct MeshVerificationReport {
     }
 };
 
+/**
+ * @brief Topological completeness report based on full-edge endpoint counting.
+ *
+ * Every geometric finite edge must occur once at each endpoint. An unbounded
+ * edge occurs once at its finite endpoint and once in the persisted infinite-
+ * edge list. Degenerate minimal-edge representations are deduplicated by their
+ * complete supporting edge before the global occurrence count is updated.
+ */
+template <class MeshT>
+struct MeshCompletenessReport {
+    using Mesh = MeshT;
+
+    MeshVerificationReport<Mesh> consistency;
+    std::size_t unique_finite_edge_endpoints{0};
+    std::size_t duplicate_local_edge_representations{0};
+    std::size_t infinite_edges{0};
+    bool all_edges_have_two_occurrences{false};
+
+    [[nodiscard]] bool complete() const noexcept {
+        return consistency.valid() && all_edges_have_two_occurrences;
+    }
+};
+
 /** Kind of difference found by compare_meshes(). */
 enum class MeshComparisonErrorKind {
     DimensionMismatch,
@@ -111,9 +141,13 @@ template <class MeshT>
 struct MeshComparisonReport {
     using Mesh = MeshT;
     using Error = MeshComparisonError<Mesh>;
+    using Scalar = typename Mesh::NodeScalar;
 
     std::size_t checked_nodes{0};
     std::size_t checked_primary_vertices{0};
+    std::size_t matched_primary_vertices{0};
+    Scalar vertex_distance_sum{0};
+    Scalar vertex_distance_max{0};
     std::vector<Error> errors;
 
     [[nodiscard]] bool equal() const noexcept {
@@ -122,6 +156,24 @@ struct MeshComparisonReport {
 
     [[nodiscard]] std::size_t error_count() const noexcept {
         return errors.size();
+    }
+
+    [[nodiscard]] Scalar mean_vertex_distance() const noexcept {
+        return matched_primary_vertices == 0
+            ? Scalar{0}
+            : vertex_distance_sum /
+                  static_cast<Scalar>(matched_primary_vertices);
+    }
+
+    void print_summary(std::ostream& output) const {
+        output
+            << "checked nodes:             " << checked_nodes << '\n'
+            << "checked primary vertices:  " << checked_primary_vertices << '\n'
+            << "matched primary vertices:  " << matched_primary_vertices << '\n'
+            << "sum of position errors:    " << vertex_distance_sum << '\n'
+            << "mean position error:       " << mean_vertex_distance() << '\n'
+            << "max position error:        " << vertex_distance_max << '\n'
+            << "comparison errors:         " << error_count() << '\n';
     }
 };
 
@@ -253,6 +305,10 @@ public:
         return point_;
     }
 
+    [[nodiscard]] auto& extended_nodes() noexcept {
+        return raycaster_.extended_nodes();
+    }
+
 private:
     ValidationTree<Mesh> tree_;
     RayCaster raycaster_;
@@ -341,7 +397,7 @@ void print_comparison_error(
         output << "vertex sigma=";
         print_sigma(output, error.sigma);
         output << " positions differ by " << error.distance
-               << " > sqrt(max variance)=" << error.tolerance;
+               << " > tolerance=" << error.tolerance;
         break;
     }
 
@@ -422,6 +478,111 @@ template <class Mesh>
         }
     }
 
+    return report;
+}
+
+/**
+ * @brief Check geometric consistency and global Voronoi-edge closure.
+ *
+ * The finite endpoint contribution of one geometric edge is identified by the
+ * EdgeIterator's complete supporting edge (`full_indices()`), not by its local
+ * minimal edge. This matters for degenerate vertices where the same geometric
+ * edge may be represented by several minimal edges and cell perspectives. Such
+ * repetitions are collapsed per persistent vertex address before the global
+ * EdgeHash is updated.
+ *
+ * A finite edge is complete after two distinct endpoint occurrences. An
+ * unbounded edge contributes its persisted infinite-edge record as the second
+ * occurrence. EdgeHashTable::all_edges_complete() additionally rejects a third
+ * occurrence.
+ *
+ * This is a topological completeness check under the same full-dimensional
+ * Voronoi assumptions as the construction algorithm. It cannot manufacture an
+ * edge that is absent together with both of its endpoint/incidence records.
+ */
+template <class Mesh>
+[[nodiscard]] MeshCompletenessReport<Mesh> verify_mesh_complete(
+    Mesh& mesh,
+    typename Mesh::NodeScalar maximum_variance =
+        typename Mesh::NodeScalar{1e-20},
+    bool print_errors = false,
+    std::ostream& output = std::cerr) {
+
+    using Index = typename Mesh::Index;
+    using Address = typename Mesh::Address;
+    using Sigma = typename Mesh::Sigma;
+    using ExtendedNodes = std::remove_reference_t<
+        decltype(std::declval<detail::MeshValidationContext<Mesh>&>()
+                     .extended_nodes())>;
+    using Iterator = EdgeIterator<ExtendedNodes, detail::EmptyLock>;
+    using GlobalEdgeHash = detail::EdgeHashTable<detail::EmptyLock>;
+
+    MeshCompletenessReport<Mesh> report;
+    report.consistency = verify_mesh(
+        mesh,
+        maximum_variance,
+        print_errors,
+        output);
+
+    detail::MeshValidationContext<Mesh> context(mesh);
+    Iterator iterator(context.extended_nodes());
+
+    // One persistent vertex can be visible in several cells. In degenerate
+    // geometry those cell-local traversals may expose the same full supporting
+    // edge through different minimal edges. Keep only one endpoint occurrence
+    // per (vertex address, full edge).
+    std::unordered_map<Address, std::vector<Sigma>> edges_by_vertex;
+
+    for (Index cell = Index{0}; cell < mesh.size(); ++cell) {
+        context.activate_cell(cell);
+
+        for (const auto& vertex : mesh.vertices(cell)) {
+            iterator.reset(
+                vertex.sigma,
+                vertex.position,
+                cell,
+                typename Iterator::OnQueueEdges{});
+
+            auto& full_edges = edges_by_vertex[vertex.address];
+
+            while (const auto edge = iterator.next()) {
+                Sigma full_edge(
+                    edge->full_indices().begin(),
+                    edge->full_indices().end());
+                std::sort(full_edge.begin(), full_edge.end());
+
+                const auto duplicate = std::find(
+                    full_edges.begin(),
+                    full_edges.end(),
+                    full_edge);
+                if (duplicate != full_edges.end()) {
+                    ++report.duplicate_local_edge_representations;
+                    continue;
+                }
+
+                full_edges.push_back(std::move(full_edge));
+            }
+        }
+    }
+
+    GlobalEdgeHash edge_hash(256);
+    for (const auto& entry : edges_by_vertex) {
+        for (const Sigma& full_edge : entry.second) {
+            (void)edge_hash.pushedge(full_edge, std::int64_t{0}, true);
+            ++report.unique_finite_edge_endpoints;
+        }
+    }
+
+    for (const auto& infinite_edge : mesh.infinite_edges()) {
+        (void)edge_hash.pushedge(
+            infinite_edge.sigma,
+            GlobalEdgeHash::infinite_cell,
+            true);
+        ++report.infinite_edges;
+    }
+
+    report.all_edges_have_two_occurrences =
+        edge_hash.all_edges_complete();
     return report;
 }
 
@@ -558,12 +719,43 @@ template <class FirstMesh, class SecondMesh>
                 second_vertex->position,
                 second_position);
 
+            // vertex_variance() is scale-free: it measures the relative
+            // variance of squared generator distances. Convert its square root
+            // back to a length with the local Voronoi radius. A small
+            // floating-point floor is additionally required because two valid
+            // constructions may solve the same vertex in a different order and
+            // therefore differ by a few ulps even when both variances round to
+            // zero.
+            first.nodes().copy_node(first_vertex.sigma.front(), first_node.data());
+            second.nodes().copy_node(second_vertex->sigma.front(), second_node.data());
+
+            const Scalar first_radius = (first_position - first_node).norm();
+            const Scalar second_radius = (second_position - second_node).norm();
+            const Scalar radius = std::max(first_radius, second_radius);
+
             using std::sqrt;
-            const Scalar tolerance = sqrt(std::max(
-                first_variance,
-                second_variance));
+            const Scalar variance_tolerance =
+                radius * sqrt(std::max(first_variance, second_variance));
+
+            const Scalar coordinate_scale = std::max({
+                Scalar{1},
+                first_position.norm(),
+                second_position.norm(),
+                first_node.norm(),
+                second_node.norm()});
+            const Scalar roundoff_tolerance =
+                Scalar{128} * std::numeric_limits<Scalar>::epsilon() *
+                coordinate_scale;
+
+            const Scalar tolerance =
+                std::max(variance_tolerance, roundoff_tolerance);
             const Scalar distance =
                 (first_position - second_position).norm();
+
+            ++report.matched_primary_vertices;
+            report.vertex_distance_sum += distance;
+            report.vertex_distance_max =
+                std::max(report.vertex_distance_max, distance);
 
             if (!(distance <= tolerance)) {
                 Error error;

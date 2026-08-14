@@ -1,49 +1,47 @@
 #pragma once
 
 /**
- * @file compute_voronoi_20260812.hpp
+ * @file compute_voronoi.hpp
  * @brief Top-level owner and coordinator of HighVoronoi mesh construction.
  *
- * ComputeVoronoi owns the global construction topology:
+ * ComputeVoronoi owns the two independent construction axes:
  *
- * - MeshThreading: one mesh branch or several parallel mesh branches;
- * - CastThreading: one or several workers inside every mesh branch;
- * - VoronoiThreading: MultiThread iff either of the two policies is multi-
- *   threaded. Its lock type determines the lock used by each branch queue.
+ * - MeshThreading: one mesh branch or several reordered mesh branches;
+ * - CastThreading: one or several geometry workers inside each branch.
  *
- * SystematicVoronoi is intentionally unaware of MeshThreading. VoronoiWorker
- * is unaware of all threading policies.
+ * Parallel mesh branches are non-owning ReorderedMeshViews of the same
+ * persistent VoronoiMesh. Each branch moves one disjoint contiguous range of
+ * public cells to the beginning of its local numbering. Newly found vertices
+ * are first queued locally by the discovering SystematicVoronoi, then stored
+ * once through the shared mesh/database and propagated to the other branches
+ * in their local public numbering. Target branches perform queue-on-find with
+ * their own prototype EdgeIterator; worker EdgeIterators never cross branches.
  *
- * The current implementation completes the one-mesh branch. Construction of
- * parallel MeshView/SwitchView branches is left behind one explicit
- * not-implemented error, as requested. The register_vertex() boundary is
- * already the place where future branches will exchange newly found vertices.
+ * SystematicVoronoi remains unaware of MeshThreading. VoronoiWorker remains
+ * unaware of both threading policies.
  */
 
+#include <highvoronoi/detail/hvview.hpp>
 #include <highvoronoi/detail/locks.hpp>
 #include <highvoronoi/parameters.hpp>
+#include <highvoronoi/geometry/mesh_view.hpp>
 #include <highvoronoi/geometry/systematic_voronoi.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
+#include <exception>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
 namespace highvoronoi {
 
-/**
- * @brief Top-level Voronoi construction coordinator.
- *
- * @tparam MeshT Main mesh type.
- * @tparam RayCasterT RayCaster type for the current one-mesh implementation.
- * @tparam MeshThreadingT SingleThread or MultiThread for mesh branches.
- * @tparam CastThreadingT SingleThread or MultiThread inside each branch.
- */
 template <
     class MeshT,
     class RayCasterT,
@@ -79,10 +77,26 @@ public:
 
     using QueueLock = typename VoronoiThreading::RWLock;
 
+    using BranchIndexView = SwitchView<Index>;
+    using ParallelBranchMesh = ReorderedMeshView<Mesh, BranchIndexView>;
+    using BranchMesh = std::conditional_t<
+        MeshIsParallel,
+        ParallelBranchMesh,
+        Mesh>;
+
+    using ReboundRayCaster = decltype(
+        std::declval<const RayCaster&>().rebind(
+            std::declval<BranchMesh&>()));
+
+    using BranchRayCaster = std::conditional_t<
+        MeshIsParallel,
+        ReboundRayCaster,
+        RayCaster>;
+
     using Systematic = SystematicVoronoi<
         ComputeVoronoi,
-        Mesh,
-        RayCaster,
+        BranchMesh,
+        BranchRayCaster,
         CastThreading,
         QueueLock,
         QueueParameters,
@@ -91,17 +105,6 @@ public:
     using Vertex = typename Systematic::Vertex;
     using EdgeIteratorType = typename Systematic::EdgeIteratorType;
 
-    /**
-     * @brief Construct the top-level algorithm for cells 0..range_end.
-     *
-     * range_end defaults to mesh.size()-1. The caller is responsible for
-     * arranging the desired cells in the public prefix 0..range_end before
-     * constructing ComputeVoronoi.
-     *
-     * The MultiThread mesh-branch path currently throws after validating that
-     * the mesh database itself uses ReadWriteLock. Its later implementation
-     * will build ReorderedMeshView/SwitchView branches here.
-     */
     ComputeVoronoi(
         Mesh& mesh,
         const RayCaster& raycaster_prototype,
@@ -137,23 +140,9 @@ public:
         }
 
         if constexpr (MeshIsParallel) {
-            throw std::logic_error(
-                "ComputeVoronoi parallel MeshView construction is not yet "
-                "implemented. The one-mesh and CastThreading paths are ready.");
+            initialize_parallel_branches(raycaster_prototype);
         } else {
-            // Keep one common branch representation even in the serial case.
-            parallel_meshes_.push_back(std::addressof(mesh_));
-
-            systematic_voronois_.push_back(
-                std::make_unique<Systematic>(
-                    mesh_,
-                    Index{0},
-                    range_end_,
-                    *this,
-                    raycaster_prototype,
-                    cast_threading_,
-                    queue_parameters_,
-                    edge_parameters_));
+            initialize_serial_branch(raycaster_prototype);
         }
     }
 
@@ -162,36 +151,54 @@ public:
     ComputeVoronoi(ComputeVoronoi&&) = delete;
     ComputeVoronoi& operator=(ComputeVoronoi&&) = delete;
 
-    /** Start all mesh branches. */
+    /** @brief Start all mesh branches and rethrow the first branch exception. */
     void compute() {
         if constexpr (!MeshIsParallel) {
             systematic_voronois_.front()->compute();
-        } else {
-            throw std::logic_error(
-                "Parallel mesh-branch execution is not yet implemented.");
+            return;
+        }
+
+        std::vector<std::thread> threads;
+        std::vector<std::exception_ptr> exceptions(
+            systematic_voronois_.size());
+        threads.reserve(systematic_voronois_.size());
+
+        for (std::size_t branch = 0;
+             branch < systematic_voronois_.size();
+             ++branch) {
+            threads.emplace_back([&, branch] {
+                try {
+                    systematic_voronois_[branch]->compute();
+                } catch (...) {
+                    exceptions[branch] = std::current_exception();
+                }
+            });
+        }
+
+        for (auto& thread : threads) {
+            thread.join();
+        }
+
+        for (const auto& exception : exceptions) {
+            if (exception) {
+                std::rethrow_exception(exception);
+            }
         }
     }
 
     /**
-     * @brief Persist and communicate one newly found vertex.
+     * @brief Persist one newly found vertex and propagate it across branches.
      *
-     * In the current one-mesh path the persistent insertion is duplicate-safe
-     * through AbstractMesh/HVDataBase. Regardless of whether another thread
-     * inserted the vertex first, the branch queue performs its own first-claim
-     * test. Therefore the thread that first claims the queue item is exactly
-     * the thread responsible for the OnQueueEdges pass.
-     *
-     * The future MeshThreading path will convert
-     *
-     *   source public sigma -> stable internal sigma -> target public sigma
-     *
-     * and call queue_vertex() on every relevant SystematicVoronoi branch.
+     * The source branch has already performed its local queue claim and
+     * OnQueueEdges pass before this function is entered. Other branches receive
+     * the translated vertex through SystematicVoronoi::queue_vertex(vertex),
+     * which uses that branch's prototype EdgeIterator. The prototype is local
+     * to the target branch and never transported through ComputeVoronoi.
      */
     template <class MeshPoint>
     [[nodiscard]] bool register_vertex(
         const Vertex& vertex,
         Index source_id,
-        EdgeIteratorType& source_queueing_iterator,
         Sigma& internal_sigma_buffer,
         Sigma& external_sigma_buffer,
         MeshPoint& mesh_point_buffer) {
@@ -206,26 +213,53 @@ public:
             vertex.position,
             mesh_point_buffer);
 
-        Mesh& source_mesh = *parallel_meshes_[source];
+        BranchMesh& source_mesh = *parallel_meshes_[source];
         const auto address = source_mesh.store_vertex(
             mesh_point_buffer,
             vertex.sigma,
             internal_sigma_buffer);
 
         const bool newly_stored =
-            address != static_cast<typename Mesh::Address>(0);
+            address != static_cast<typename BranchMesh::Address>(0);
 
-        if constexpr (!MeshIsParallel) {
-            (void)external_sigma_buffer;
+        // The source branch has already queued this vertex in
+        // SystematicVoronoi::register_found_vertex() with the discovering
+        // worker's own EdgeIterator. Do not queue it a second time here.
 
-            (void)systematic_voronois_[0]->queue_vertex(
-                vertex,
-                source_queueing_iterator);
+        if constexpr (MeshIsParallel) {
+            make_wrapped_public_signature(
+                source_mesh,
+                vertex.sigma,
+                internal_sigma_buffer);
+
+            for (std::size_t target = 0;
+                 target < systematic_voronois_.size();
+                 ++target) {
+                if (target == source) {
+                    continue;
+                }
+
+                BranchMesh& target_mesh = *parallel_meshes_[target];
+                make_branch_public_signature(
+                    target_mesh,
+                    internal_sigma_buffer,
+                    external_sigma_buffer);
+
+                Vertex communicated(
+                    static_cast<std::size_t>(mesh_.dimension()));
+                communicated.sigma.assign(
+                    external_sigma_buffer.begin(),
+                    external_sigma_buffer.end());
+                communicated.position = vertex.position;
+
+                // No worker EdgeIterator crosses the branch boundary. The
+                // target SystematicVoronoi uses its own prototype iterator,
+                // serialized internally when required.
+                (void)systematic_voronois_[target]
+                    ->queue_vertex(communicated);
+            }
         } else {
-            // The algorithmic communication contract is fixed, but actual
-            // parallel MeshView objects are deliberately not introduced yet.
-            throw std::logic_error(
-                "Parallel vertex communication is not yet implemented.");
+            (void)external_sigma_buffer;
         }
 
         if (newly_stored) {
@@ -280,6 +314,136 @@ public:
     }
 
 private:
+    void initialize_serial_branch(const RayCaster& raycaster_prototype) {
+        if constexpr (!MeshIsParallel) {
+            parallel_meshes_.push_back(std::addressof(mesh_));
+            systematic_voronois_.push_back(
+                std::make_unique<Systematic>(
+                    mesh_,
+                    Index{0},
+                    range_end_,
+                    *this,
+                    raycaster_prototype,
+                    cast_threading_,
+                    queue_parameters_,
+                    edge_parameters_));
+        }
+    }
+
+    void initialize_parallel_branches(
+        const RayCaster& raycaster_prototype) {
+        if constexpr (MeshIsParallel) {
+            const std::size_t total_cells =
+                static_cast<std::size_t>(range_end_) + std::size_t{1};
+            const std::size_t branch_count = std::min(
+                mesh_threading_.thread_count(),
+                total_cells);
+
+            if (branch_count == 0) {
+                throw std::logic_error(
+                    "ComputeVoronoi requires at least one mesh branch.");
+            }
+
+            owned_parallel_meshes_.reserve(branch_count);
+            parallel_meshes_.reserve(branch_count);
+            systematic_voronois_.reserve(branch_count);
+
+            const std::size_t base_length = total_cells / branch_count;
+            const std::size_t remainder = total_cells % branch_count;
+            std::size_t first = 0;
+
+            for (std::size_t branch = 0;
+                 branch < branch_count;
+                 ++branch) {
+                const std::size_t length =
+                    base_length + (branch < remainder ? 1 : 0);
+                const std::size_t last = first + length - 1;
+
+                auto branch_mesh = std::make_unique<BranchMesh>(
+                    mesh_,
+                    BranchIndexView(
+                        checked_index(first),
+                        checked_index(last)));
+
+                BranchMesh& mesh_ref = *branch_mesh;
+                auto branch_raycaster =
+                    raycaster_prototype.rebind(mesh_ref);
+
+                parallel_meshes_.push_back(std::addressof(mesh_ref));
+                owned_parallel_meshes_.push_back(std::move(branch_mesh));
+
+                systematic_voronois_.push_back(
+                    std::make_unique<Systematic>(
+                        mesh_ref,
+                        checked_index(branch),
+                        checked_index(length - 1),
+                        *this,
+                        branch_raycaster,
+                        cast_threading_,
+                        queue_parameters_,
+                        edge_parameters_));
+
+                first = last + 1;
+            }
+        }
+    }
+
+    template <class PublicSigma>
+    void make_wrapped_public_signature(
+        const BranchMesh& source_mesh,
+        const PublicSigma& source_sigma,
+        Sigma& output) const {
+        output.clear();
+        output.reserve(source_sigma.size());
+
+        const Index ordinary_count = mesh_.size();
+        for (const Index index : source_sigma) {
+            if (index < ordinary_count) {
+                output.push_back(
+                    source_mesh.wrapped_public_index(index));
+            } else {
+                output.push_back(index);
+            }
+        }
+
+        std::sort(output.begin(), output.end());
+    }
+
+    void make_branch_public_signature(
+        const BranchMesh& target_mesh,
+        const Sigma& wrapped_sigma,
+        Sigma& output) const {
+        output.clear();
+        output.reserve(wrapped_sigma.size());
+
+        const Index ordinary_count = mesh_.size();
+        for (const Index index : wrapped_sigma) {
+            if (index < ordinary_count) {
+                const auto target_index =
+                    target_mesh.reordered_public_index(index);
+                if (!target_index) {
+                    throw std::logic_error(
+                        "Parallel mesh branch lost a visible ordinary node.");
+                }
+                output.push_back(*target_index);
+            } else {
+                output.push_back(index);
+            }
+        }
+
+        std::sort(output.begin(), output.end());
+    }
+
+    [[nodiscard]] Index checked_index(std::size_t value) const {
+        const std::size_t maximum = static_cast<std::size_t>(
+            (std::numeric_limits<Index>::max)());
+        if (value > maximum) {
+            throw std::overflow_error(
+                "ComputeVoronoi branch index does not fit Mesh::Index.");
+        }
+        return static_cast<Index>(value);
+    }
+
     [[nodiscard]] Index resolve_range_end(
         std::optional<Index> requested) const {
         if (mesh_.size() == Index{0}) {
@@ -335,10 +499,10 @@ private:
     EdgeParameters edge_parameters_;
     Index range_end_;
 
-    // The serial implementation stores the original mesh as branch 0. The
-    // later MeshThreading specialization will replace these by owning mesh
-    // views without changing SystematicVoronoi or VoronoiWorker.
-    std::vector<Mesh*> parallel_meshes_;
+    // Serial: branch 0 points directly to mesh_. Parallel: these point to the
+    // owning reordered views below; all views share mesh_'s persistent data.
+    std::vector<BranchMesh*> parallel_meshes_;
+    std::vector<std::unique_ptr<BranchMesh>> owned_parallel_meshes_;
     std::vector<std::unique_ptr<Systematic>> systematic_voronois_;
 
     std::atomic<std::size_t> new_vertices_{0};

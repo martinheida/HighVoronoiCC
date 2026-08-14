@@ -143,6 +143,7 @@ public:
     struct Record {
         Sigma sigma;
         std::vector<Scalar> position;
+        std::vector<Scalar> direction;
         bool deleted = false;
     };
 
@@ -175,6 +176,22 @@ public:
         return records_.size();
     }
 
+    template <class RVector, class SigmaVector, class UVector>
+    [[nodiscard]] std::size_t push_facet(
+        const RVector& position,
+        SigmaVector& sigma,
+        const UVector& direction) {
+        std::sort(sigma.begin(), sigma.end());
+        const std::size_t address = push(position, sigma);
+        if (address == 0) {
+            return 0;
+        }
+        records_.back().direction.assign(
+            direction.data(),
+            direction.data() + direction.size());
+        return address;
+    }
+
     template <class RVector, class SigmaVector>
     void read(
         std::size_t address,
@@ -197,6 +214,23 @@ public:
             record.position.begin(),
             record.position.end(),
             position.data());
+    }
+
+    template <class RVector, class SigmaVector, class UVector>
+    void read_facet(
+        std::size_t address,
+        RVector& position,
+        SigmaVector& sigma,
+        UVector& direction) const {
+        read(address, position, sigma);
+        if (sigma.empty()) {
+            return;
+        }
+        const Record& record = records_.at(address - 1);
+        std::copy(
+            record.direction.begin(),
+            record.direction.end(),
+            direction.data());
     }
 
     template <class SigmaVector>
@@ -503,6 +537,15 @@ private:
         secondary_address_lists_.at(internal_node).push_back(address);
     }
 
+    [[nodiscard]] const AddressList&
+    infinite_edge_addresses_impl() const override {
+        return infinite_edge_addresses_;
+    }
+
+    void register_infinite_edge_impl(Address address) override {
+        infinite_edge_addresses_.push_back(address);
+    }
+
     void mark_internal_node_deleted_impl(
         Index internal_node) override {
         if (internal_to_public_.at(internal_node) == deleted_marker()) {
@@ -541,6 +584,7 @@ private:
     InstrumentedTestDatabase database_;
     std::vector<AddressList> primary_address_lists_;
     std::vector<AddressList> secondary_address_lists_;
+    AddressList infinite_edge_addresses_;
 };
 
 using TestMesh = TestMeshT<>;

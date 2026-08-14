@@ -477,6 +477,15 @@ private:
             edge.cycle_error());
 
         if (result.status == RayCastStatus::Infinite) {
+            // Persist the geometric unbounded edge by its complete supporting
+            // generator set. Different minimal edges of a degenerate vertex may
+            // describe the same ray; the mesh/database therefore deduplicates
+            // on full_indices() in stable internal numbering.
+            (void)parent_.register_infinite_edge(
+                edge.full_indices(),
+                origin.position,
+                edge.direction(),
+                internal_sigma_buffer_);
             return false;
         }
 

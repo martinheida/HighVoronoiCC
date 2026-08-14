@@ -14,6 +14,7 @@ namespace highvoronoi::detail {
 template <class HashGenerator>
 struct HashedEdge final {
     static constexpr std::int64_t no_second_cell = -1;
+    static constexpr std::int64_t infinite_cell = -2;
 
     HashGenerator hash{};
     std::int64_t cell1{0};
@@ -38,6 +39,8 @@ class EdgeHashTable final {
 public:
     using hash_code_type = HashGenerator;
     using entry_type = HashedEdge<HashGenerator>;
+    static constexpr std::int64_t infinite_cell =
+        entry_type::infinite_cell;
 
     explicit EdgeHashTable(std::size_t length = 1)
         : table_(next_power_of_two(length)),
@@ -70,6 +73,33 @@ public:
     {
         WriteLockGuard<Lock> guard(lock_);
         std::fill(occupied_.begin(), occupied_.end(), std::uint8_t{0});
+        overfull_ = false;
+    }
+
+    /**
+     * @brief Return true iff every stored edge was encountered exactly twice.
+     *
+     * A third or later occurrence is remembered by pushedge() and makes this
+     * check fail. This is intended for global mesh-completeness diagnostics;
+     * the construction algorithm may continue to use the pushedge() return
+     * value exactly as before.
+     */
+    [[nodiscard]] bool all_edges_complete() const
+    {
+        ReadLockGuard<Lock> guard(lock_);
+
+        if (overfull_) {
+            return false;
+        }
+
+        for (std::size_t i = 0; i < table_.size(); ++i) {
+            if (occupied_[i] != 0 &&
+                table_[i].cell2 == entry_type::no_second_cell) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     [[nodiscard]] std::size_t capacity() const
@@ -106,6 +136,7 @@ private:
                 }
 
                 if (current.cell2 != entry_type::no_second_cell) {
+                    overfull_ = true;
                     return true;
                 }
 
@@ -166,6 +197,7 @@ private:
     std::vector<entry_type> table_;
     std::vector<std::uint8_t> occupied_;
     std::uint64_t mask_{0};
+    bool overfull_{false};
     mutable Lock lock_{};
 };
 

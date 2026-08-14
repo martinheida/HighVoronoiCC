@@ -362,6 +362,17 @@ private:
             *mesh_, internal_node, address);
     }
 
+    /** @brief Forward the wrapped mesh's global infinite-edge list. */
+    [[nodiscard]] const AddressList&
+    infinite_edge_addresses_impl() const override {
+        return Base::infinite_edge_addresses_of(*mesh_);
+    }
+
+    /** @brief Register an infinite edge in the wrapped storage mesh. */
+    void register_infinite_edge_impl(Address address) override {
+        Base::register_infinite_edge_at(*mesh_, address);
+    }
+
     /**
      * @brief Hide one stable node in both the wrapped mesh and this facade.
      *

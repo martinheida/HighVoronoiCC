@@ -1,7 +1,7 @@
 #pragma once
 
 /**
- * @file systematic_voronoi_v2_20260812.hpp
+ * @file systematic_voronoi.hpp
  * @brief Cell-level systematic Voronoi construction for one mesh branch.
  *
  * SystematicVoronoi knows only the CastThreading policy. It does not know
@@ -12,14 +12,17 @@
  * Synchronization is encapsulated in the data structures that require it:
  *
  * - VertexQueue owns its queue lock and duplicate hash;
- * - EdgeHash owns its own lock selected from CastThreading;
- * - FEIStorageCache owns its own lock selected from CastThreading;
+ * - EdgeHash uses the complete VoronoiThreading lock supplied as QueueLock;
+ * - FEIStorageCache uses the same complete VoronoiThreading lock;
+ * - prototype_lock_ serializes only the shared prototype EdgeIterator;
  * - ConcurrentVertexIterator owns the lock required to distribute one mesh
  *   vertex iterator among several workers.
  *
- * SystematicVoronoi itself owns no lock. Its only direct interaction with
- * threading is run_workers(), which either calls worker 0 directly or starts
- * the configured CastThreading workers.
+ * SystematicVoronoi owns one small prototype lock. It protects only mutable
+ * scratch state in prototype_edge_iterator_ when external mesh branches queue
+ * vertices through ComputeVoronoi. Worker-owned EdgeIterators remain unguarded.
+ * Shared EdgeHash and FEI cache synchronization is provided by QueueLock, which
+ * ComputeVoronoi selects from the complete VoronoiThreading configuration.
  */
 
 #include <highvoronoi/detail/hash_types.hpp>
@@ -237,8 +240,9 @@ public:
     using Vertex = VoronoiVertexTask<Mesh, RayCaster>;
 
     using CastLock = typename CastThreading::RWLock;
+    using SharedLock = QueueLock;
     using ExtendedNodes = typename RayCaster::ExtendedNodes;
-    using EdgeIteratorType = EdgeIterator<ExtendedNodes, CastLock>;
+    using EdgeIteratorType = EdgeIterator<ExtendedNodes, SharedLock>;
 
     using VertexQueue = detail::VoronoiVertexQueue<
         QueueLock,
@@ -246,7 +250,7 @@ public:
         Vertex>;
 
     using EdgeHash =
-        detail::EdgeHashFromParams_t<CastLock, EdgeParameters>;
+        detail::EdgeHashFromParams_t<SharedLock, EdgeParameters>;
 
     using Worker = VoronoiWorker<
         SystematicVoronoi,
@@ -273,7 +277,7 @@ public:
               static_cast<std::size_t>(mesh.dimension()),
               queue_parameters),
           edge_hash_(
-              detail::make_edge_hash<CastLock>(edge_parameters)),
+              detail::make_edge_hash<SharedLock>(edge_parameters)),
           prototype_raycaster_(raycaster_prototype.safe_copy()),
           prototype_edge_iterator_(
               prototype_raycaster_.extended_nodes(),
@@ -408,8 +412,17 @@ public:
             return false;
         }
 
-        const bool all_edges_complete =
-            queue_edges(vertex, edge_iterator, cell);
+        bool all_edges_complete = false;
+
+        if (std::addressof(edge_iterator) ==
+            std::addressof(prototype_edge_iterator_)) {
+            detail::WriteLockGuard<SharedLock> guard(prototype_lock_);
+            all_edges_complete =
+                queue_edges(vertex, edge_iterator, cell);
+        } else {
+            all_edges_complete =
+                queue_edges(vertex, edge_iterator, cell);
+        }
 
         if (!all_edges_complete) {
             vertex_queue_.enqueue_claimed(vertex);
@@ -428,10 +441,13 @@ public:
     }
 
     /**
-     * @brief Queue a remotely communicated vertex with the prototype iterator.
+     * @brief Queue a vertex received from ComputeVoronoi.
      *
-     * The parallel-mesh implementation is intentionally still deferred. In the
-     * current working single-mesh path this overload is not concurrently used.
+     * External mesh-branch communication deliberately supplies no EdgeIterator.
+     * The branch therefore uses its own prototype iterator. Concurrent external
+     * calls are serialized only while that prototype's mutable scratch state is
+     * used. EdgeHash and FEI cache remain the same shared branch state seen by
+     * all local workers.
      */
     [[nodiscard]] bool queue_vertex(const Vertex& vertex) {
         return queue_vertex(
@@ -450,13 +466,43 @@ public:
         Sigma& internal_sigma_buffer,
         Sigma& external_sigma_buffer,
         MeshPoint& mesh_point_buffer) {
+
+        // A locally discovered vertex must always be registered in the local
+        // branch independently of persistent/global duplicate detection. The
+        // worker supplies its own queueing iterator, so this path needs no
+        // prototype lock.
+        (void)queue_vertex(
+            vertex,
+            source_queueing_iterator);
+
+        // EdgeIterator ownership ends at the SystematicVoronoi boundary.
         return main_.register_vertex(
             vertex,
             id_,
-            source_queueing_iterator,
             internal_sigma_buffer,
             external_sigma_buffer,
             mesh_point_buffer);
+    }
+
+    /**
+     * @brief Persist one unbounded edge directly in this branch mesh.
+     *
+     * The mesh converts the complete supporting edge to stable internal
+     * numbering. Its database hash performs global duplicate detection and the
+     * mesh-level address list records only the successful insertion. No
+     * ComputeVoronoi broadcast is required for unbounded edges.
+     */
+    template <class FullEdge, class PointLike, class Direction>
+    [[nodiscard]] bool register_infinite_edge(
+        const FullEdge& full_edge,
+        const PointLike& origin,
+        const Direction& direction,
+        Sigma& internal_sigma_buffer) {
+        return mesh_.store_infinite_edge(
+                   full_edge,
+                   origin,
+                   direction,
+                   internal_sigma_buffer) != typename Mesh::Address{0};
     }
 
     [[nodiscard]] Index id() const noexcept {
@@ -608,6 +654,7 @@ private:
 
     RayCaster prototype_raycaster_;
     EdgeIteratorType prototype_edge_iterator_;
+    mutable SharedLock prototype_lock_{};
     std::vector<std::unique_ptr<Worker>> workers_;
 
     std::atomic<Index> current_cell_{Index{0}};

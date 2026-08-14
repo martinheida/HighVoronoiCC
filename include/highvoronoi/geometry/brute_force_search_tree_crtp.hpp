@@ -56,6 +56,12 @@ public:
             this->extended_nodes().safe_copy());
     }
 
+    /** @brief Recreate the same backend for another compatible mesh facade. */
+    template <class NewMesh>
+    [[nodiscard]] auto rebind(NewMesh& mesh) const {
+        return BruteForceSearchTree<NewMesh>(mesh);
+    }
+
     [[nodiscard]] SearchData make_backend_data_impl() const {
         const std::size_t dimension =
             static_cast<std::size_t>(this->dimension());

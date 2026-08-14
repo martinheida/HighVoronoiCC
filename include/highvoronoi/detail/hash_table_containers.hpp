@@ -264,6 +264,9 @@ private:
 template<class EdgeHashTable, class ResizeLock = ReadWriteLock>
 class DynamicEdgeHashContainer final {
 public:
+    static constexpr std::int64_t infinite_cell =
+        EdgeHashTable::infinite_cell;
+
     explicit DynamicEdgeHashContainer(
         std::size_t initial_table_count,
         std::uint64_t block_size,
@@ -303,6 +306,17 @@ public:
         for (const auto& table : tables_) {
             table->clear();
         }
+    }
+
+    [[nodiscard]] bool all_edges_complete() const
+    {
+        ReadLockGuard<ResizeLock> guard(resize_lock_);
+        for (const auto& table : tables_) {
+            if (!table->all_edges_complete()) {
+                return false;
+            }
+        }
+        return true;
     }
 
     [[nodiscard]] std::size_t table_count() const
@@ -367,6 +381,9 @@ class StaticEdgeHashContainer final {
     static_assert(N > 0, "StaticEdgeHashContainer requires N > 0");
 
 public:
+    static constexpr std::int64_t infinite_cell =
+        EdgeHashTable::infinite_cell;
+
     explicit StaticEdgeHashContainer(std::size_t hash_capacity = 1)
         : tables_(
             hash_container_detail::make_hash_array<EdgeHashTable, N>(
@@ -387,6 +404,16 @@ public:
         for (auto& table : tables_) {
             table.clear();
         }
+    }
+
+    [[nodiscard]] bool all_edges_complete() const
+    {
+        for (const auto& table : tables_) {
+            if (!table.all_edges_complete()) {
+                return false;
+            }
+        }
+        return true;
     }
 
     [[nodiscard]] static constexpr std::size_t table_count() noexcept

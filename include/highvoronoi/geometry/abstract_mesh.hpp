@@ -135,7 +135,8 @@ struct NoVertexFilter {
  *         `push_back(Address)`.
  *
  * `DatabaseT` must expose the aliases `Scalar` and `Index` and the operations
- * `push(r, sigma)`, `read(address, r, sigma)`, `contains(sigma)`, and
+ * `push(r, sigma)`, `read(address, r, sigma)`, `push_facet(r, sigma, u)`,
+ * `read_facet(address, r, sigma, u)`, `contains(sigma)`, and
  * `erase(address, sigma)`.
  */
 template <typename NodeScalarT,
@@ -195,6 +196,14 @@ public:
     struct VertexRecord {
         Sigma sigma;
         VertexPoint position;
+        Address address = Address{0};
+    };
+
+    /** @brief Owning value returned by the infinite-edge iterator. */
+    struct InfiniteEdgeRecord {
+        Sigma sigma;
+        VertexPoint origin;
+        VertexPoint direction;
         Address address = Address{0};
     };
 
@@ -388,6 +397,146 @@ public:
         AddressSource addresses_;
     };
 
+    /**
+     * @brief Read-only range over persisted unbounded Voronoi edges.
+     *
+     * The address list belongs to the concrete storage mesh. Views may forward
+     * that list while this common iterator converts each stable internal edge
+     * signature into the public numbering of the mesh on which infinite_edges()
+     * was requested.
+     */
+    class InfiniteEdgeRange {
+    public:
+        class Iterator {
+        public:
+            using iterator_category = std::input_iterator_tag;
+            using value_type = InfiniteEdgeRecord;
+            using difference_type = std::ptrdiff_t;
+            using pointer = const InfiniteEdgeRecord*;
+            using reference = const InfiniteEdgeRecord&;
+
+            [[nodiscard]] reference operator*() const noexcept {
+                return current_;
+            }
+
+            [[nodiscard]] pointer operator->() const noexcept {
+                return &current_;
+            }
+
+            Iterator& operator++() {
+                load_next();
+                return *this;
+            }
+
+            Iterator operator++(int) {
+                Iterator previous(*this);
+                ++(*this);
+                return previous;
+            }
+
+            friend bool operator==(
+                const Iterator& left,
+                const Iterator& right) noexcept {
+                if (left.at_end_ && right.at_end_) {
+                    return true;
+                }
+                return std::addressof(left.mesh_) ==
+                           std::addressof(right.mesh_) &&
+                       left.position_ == right.position_ &&
+                       left.at_end_ == right.at_end_;
+            }
+
+            friend bool operator!=(
+                const Iterator& left,
+                const Iterator& right) noexcept {
+                return !(left == right);
+            }
+
+        private:
+            friend class InfiniteEdgeRange;
+
+            Iterator(
+                const AbstractMesh& mesh,
+                const AddressList& addresses,
+                std::size_t position,
+                bool at_end)
+                : mesh_(mesh),
+                  addresses_(addresses),
+                  position_(position),
+                  at_end_(at_end),
+                  current_{
+                      {},
+                      mesh_.make_vertex_point(),
+                      mesh_.make_vertex_point(),
+                      Address{0}} {
+                if (!at_end_) {
+                    load_next();
+                }
+            }
+
+            void load_next() {
+                while (position_ < addresses_.size()) {
+                    const Address address = addresses_[position_++];
+                    internal_sigma_.clear();
+
+                    mesh_.database_ref().read_facet(
+                        address,
+                        current_.origin,
+                        internal_sigma_,
+                        current_.direction);
+
+                    if (internal_sigma_.empty()) {
+                        continue;
+                    }
+
+                    current_.sigma.clear();
+                    if (!mesh_.try_make_public_signature(
+                            internal_sigma_,
+                            current_.sigma)) {
+                        continue;
+                    }
+
+                    current_.address = address;
+                    at_end_ = false;
+                    return;
+                }
+
+                at_end_ = true;
+            }
+
+            const AbstractMesh& mesh_;
+            const AddressList& addresses_;
+            std::size_t position_ = 0;
+            bool at_end_ = true;
+            Sigma internal_sigma_;
+            InfiniteEdgeRecord current_;
+        };
+
+        [[nodiscard]] Iterator begin() const {
+            return Iterator(mesh_, addresses_, 0, false);
+        }
+
+        [[nodiscard]] Iterator end() const {
+            return Iterator(mesh_, addresses_, addresses_.size(), true);
+        }
+
+        [[nodiscard]] bool empty() const {
+            return begin() == end();
+        }
+
+    private:
+        friend class AbstractMesh;
+
+        InfiniteEdgeRange(
+            const AbstractMesh& mesh,
+            const AddressList& addresses)
+            : mesh_(mesh),
+              addresses_(addresses) {}
+
+        const AbstractMesh& mesh_;
+        const AddressList& addresses_;
+    };
+
     using SingleVertexRange =
         VertexRange<const AddressList&>;
     using CombinedAddressSource =
@@ -525,6 +674,66 @@ public:
         }
 
         return address;
+    }
+
+    /**
+     * @brief Persist one unbounded Voronoi edge.
+     *
+     * The complete supporting edge signature is converted to stable internal
+     * numbering and used as the database key. `origin` and `direction` are
+     * stored as facet payload. Duplicate insertion returns address zero and
+     * does not append another address to the mesh-level infinite-edge list.
+     */
+    template <class SigmaLike, class RVector, class UVector>
+    [[nodiscard]] Address store_infinite_edge(
+        const SigmaLike& public_full_edge,
+        const RVector& origin,
+        const UVector& direction) {
+        Sigma internal_buffer;
+        return store_infinite_edge(
+            public_full_edge,
+            origin,
+            direction,
+            internal_buffer);
+    }
+
+    /**
+     * @brief Persist one unbounded edge using caller-owned signature scratch.
+     */
+    template <class SigmaLike, class RVector, class UVector>
+    [[nodiscard]] Address store_infinite_edge(
+        const SigmaLike& public_full_edge,
+        const RVector& origin,
+        const UVector& direction,
+        Sigma& internal_buffer) {
+        require_vertex_dimension(origin);
+        require_vertex_dimension(direction);
+        make_internal_signature(public_full_edge, internal_buffer);
+
+        const Index ordinary_count = internal_size();
+        if (internal_buffer.front() >= ordinary_count) {
+            throw std::invalid_argument(
+                "A stored infinite edge must contain an ordinary node.");
+        }
+
+        const Address address = database_ref().push_facet(
+            origin,
+            internal_buffer,
+            direction);
+
+        if (address == Address{0}) {
+            return Address{0};
+        }
+
+        register_infinite_edge_impl(address);
+        return address;
+    }
+
+    /** @brief Return every persisted unbounded edge visible through this mesh. */
+    [[nodiscard]] InfiniteEdgeRange infinite_edges() const {
+        return InfiniteEdgeRange(
+            *this,
+            infinite_edge_addresses_impl());
     }
 
     /**
@@ -725,6 +934,8 @@ public:
             }
         }
 
+        erase_infinite_edges_touching(deleted_internal_nodes);
+
         for (const Index internal_node : deleted_internal_nodes) {
             mark_internal_node_deleted_impl(internal_node);
         }
@@ -898,6 +1109,8 @@ public:
             }
         }
 
+        erase_infinite_edges_touching(deleted_internal_nodes);
+
         for (const Index internal_node : deleted_internal_nodes) {
             mark_internal_node_deleted_impl(internal_node);
         }
@@ -965,6 +1178,20 @@ protected:
         const AbstractMesh& mesh,
         Index internal_node) {
         return mesh.secondary_vertex_addresses_impl(internal_node);
+    }
+
+    /** @brief Access another mesh's global infinite-edge address list. */
+    [[nodiscard]] static const AddressList&
+    infinite_edge_addresses_of(
+        const AbstractMesh& mesh) {
+        return mesh.infinite_edge_addresses_impl();
+    }
+
+    /** @brief Register an infinite-edge address in another compatible mesh. */
+    static void register_infinite_edge_at(
+        AbstractMesh& mesh,
+        Address address) {
+        mesh.register_infinite_edge_impl(address);
     }
 
     /** @brief Register a primary address in another compatible mesh. */
@@ -1074,6 +1301,14 @@ private:
     /** @brief Required: register an address at one secondary node. */
     virtual void register_secondary_vertex_impl(
         Index internal_node,
+        Address address) = 0;
+
+    /** @brief Required: return the global infinite-edge address list. */
+    [[nodiscard]] virtual const AddressList&
+    infinite_edge_addresses_impl() const = 0;
+
+    /** @brief Required: register one persisted infinite-edge address. */
+    virtual void register_infinite_edge_impl(
         Address address) = 0;
 
     /** @brief Required: remove one internal node from public numbering. */
@@ -1279,6 +1514,51 @@ private:
                 deleted_public_nodes.push_back(public_index);
                 deleted_internal_nodes.push_back(
                     public_node_to_internal_impl(public_index));
+            }
+        }
+    }
+
+    /**
+     * @brief Tombstone persisted infinite edges touching deleted internal nodes.
+     *
+     * Infinite edges are globally addressed rather than registered per node,
+     * so node deletion cannot discover them through primary/secondary vertex
+     * lists. The complete internal edge signature is therefore read from the
+     * global infinite-edge address list and removed from the database hash when
+     * it intersects the deleted-node set. Tombstoned list entries remain safe:
+     * InfiniteEdgeRange skips them and concrete storage meshes may compact them.
+     */
+    void erase_infinite_edges_touching(
+        const Sigma& deleted_internal_nodes) {
+        if (deleted_internal_nodes.empty()) {
+            return;
+        }
+
+        Sigma internal_sigma;
+        VertexPoint origin = make_vertex_point();
+        VertexPoint direction = make_vertex_point();
+        const AddressList& addresses = infinite_edge_addresses_impl();
+        const std::size_t count = addresses.size();
+
+        for (std::size_t position = 0; position < count; ++position) {
+            const Address address = addresses[position];
+            internal_sigma.clear();
+            database_ref().read_facet(
+                address,
+                origin,
+                internal_sigma,
+                direction);
+
+            if (internal_sigma.empty()) {
+                continue;
+            }
+
+            if (intersects_sorted(
+                    internal_sigma,
+                    deleted_internal_nodes)) {
+                (void)database_ref().erase(
+                    address,
+                    internal_sigma);
             }
         }
     }

@@ -667,6 +667,13 @@ public:
         return ClassicRayCaster(this->tree_, this->parameters_);
     }
 
+    /** @brief Recreate this ray-cast policy on another compatible mesh. */
+    template <class NewMesh>
+    [[nodiscard]] auto rebind(NewMesh& mesh) const {
+        auto tree = this->tree_.rebind(mesh);
+        return ClassicRayCaster<decltype(tree)>(tree, this->parameters_);
+    }
+
     template <class Sigma, class Edge, class Origin>
     [[nodiscard]] Result cast_impl(
         Sigma& sigma,
@@ -823,6 +830,13 @@ public:
 
     [[nodiscard]] InRangeRayCaster safe_copy_impl() const {
         return InRangeRayCaster(this->tree_, this->parameters_);
+    }
+
+    /** @brief Recreate this ray-cast policy on another compatible mesh. */
+    template <class NewMesh>
+    [[nodiscard]] auto rebind(NewMesh& mesh) const {
+        auto tree = this->tree_.rebind(mesh);
+        return InRangeRayCaster<decltype(tree)>(tree, this->parameters_);
     }
 
     template <class Sigma, class Edge, class Origin>

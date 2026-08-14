@@ -299,11 +299,11 @@ private:
      * another lightweight mapping view onto the same internal node storage.
      */
     void set_boundary_impl(BoundaryType boundary) override {
-        if (has_active_vertices()) {
+        if (has_active_records()) {
             throw std::logic_error(
                 "Cannot replace a VoronoiMesh boundary while active vertices "
-                "are stored. Boundary mirror indices are part of vertex "
-                "signatures.");
+                "or infinite edges are stored. Boundary mirror indices may be "
+                "part of persistent signatures.");
         }
 
         extended_nodes_ = ExtendedNodes(
@@ -381,6 +381,17 @@ private:
             static_cast<std::size_t>(internal_node)).push_back(address);
     }
 
+    /** @brief Return the global list of persisted unbounded edges. */
+    [[nodiscard]] const AddressList&
+    infinite_edge_addresses_impl() const override {
+        return infinite_edge_addresses_;
+    }
+
+    /** @brief Register one newly persisted unbounded edge. */
+    void register_infinite_edge_impl(Address address) override {
+        infinite_edge_addresses_.push_back(address);
+    }
+
     /**
      * @brief Mark an internal node as deleted without changing internal storage.
      *
@@ -417,6 +428,7 @@ private:
             public_numbering_dirty_ = false;
         }
         compact_vertex_address_lists();
+        compact_infinite_edge_address_list();
     }
 
     // ---------------------------------------------------------------------
@@ -513,7 +525,7 @@ private:
      * boundary while records exist could silently reinterpret those indices,
      * so boundary replacement is restricted to an empty mesh state.
      */
-    [[nodiscard]] bool has_active_vertices() const {
+    [[nodiscard]] bool has_active_records() const {
         std::unordered_set<Address> visited;
         Sigma sigma;
         VertexPoint position = make_vertex_point_for_read();
@@ -535,6 +547,21 @@ private:
                 }
             }
         }
+
+        VertexPoint direction = make_vertex_point_for_read();
+        const std::size_t infinite_count = infinite_edge_addresses_.size();
+        for (std::size_t i = 0; i < infinite_count; ++i) {
+            sigma.clear();
+            database_->read_facet(
+                infinite_edge_addresses_[i],
+                position,
+                sigma,
+                direction);
+            if (!sigma.empty()) {
+                return true;
+            }
+        }
+
         return false;
     }
 
@@ -561,6 +588,24 @@ private:
 
         compact_address_lists(primary_address_lists_, active_addresses);
         compact_address_lists(secondary_address_lists_, active_addresses);
+    }
+
+    /** @brief Remove tombstoned records from the global infinite-edge list. */
+    void compact_infinite_edge_address_list() {
+        Sigma sigma;
+        VertexPoint origin = make_vertex_point_for_read();
+        VertexPoint direction = make_vertex_point_for_read();
+
+        infinite_edge_addresses_.erase_if(
+            [this, &sigma, &origin, &direction](Address address) {
+                sigma.clear();
+                database_->read_facet(
+                    address,
+                    origin,
+                    sigma,
+                    direction);
+                return sigma.empty();
+            });
     }
 
     /** @brief Insert every address from a list family into a set. */
@@ -593,6 +638,7 @@ private:
     std::vector<Index> internal_to_public_;
     std::vector<AddressList> primary_address_lists_;
     std::vector<AddressList> secondary_address_lists_;
+    AddressList infinite_edge_addresses_;
     ExtendedNodes extended_nodes_;
     std::shared_ptr<Database> database_;
     bool public_numbering_dirty_ = false;

@@ -587,7 +587,88 @@ if(HIGHVORONOI_BUILD_TESTS)
         COMMAND test_compute_voronoi_validation
     )
 
+        add_executable(test_compute_voronoi_singlethread_meshview
+        tests/test_compute_voronoi_singlethread_meshview.cpp
+    )
 
+    target_link_libraries(test_compute_voronoi_singlethread_meshview
+        PRIVATE
+            HighVoronoi::HighVoronoi
+            Threads::Threads
+    )
+
+    add_test(
+        NAME test_compute_voronoi_singlethread_meshview
+        COMMAND test_compute_voronoi_singlethread_meshview
+    )
+
+    # Parallel Voronoi smoke/regression test: 200 random nodes in 3D.
+    add_executable(test_compute_voronoi_parallel_smoke
+        tests/test_compute_voronoi_parallel_smoke.cpp
+    )
+
+    target_link_libraries(test_compute_voronoi_parallel_smoke
+        PRIVATE
+            HighVoronoi::HighVoronoi
+            Threads::Threads
+    )
+
+    add_test(
+        NAME test_compute_voronoi_parallel_smoke
+        COMMAND test_compute_voronoi_parallel_smoke
+    )
+
+    # A deadlock should fail CTest instead of hanging indefinitely.
+    set_tests_properties(
+        test_compute_voronoi_parallel_smoke
+        PROPERTIES TIMEOUT 60
+    )
+
+    add_executable(test_infinite_edge_storage
+        tests/test_infinite_edge_storage_20260814.cpp
+    )
+    target_link_libraries(test_infinite_edge_storage
+        PRIVATE
+            HighVoronoi::HighVoronoi
+            Threads::Threads
+    )
+    add_test(
+        NAME test_infinite_edge_storage
+        COMMAND test_infinite_edge_storage
+    )
+
+    add_executable(test_edge_hash_completeness
+        tests/test_edge_hash_completeness_20260814.cpp
+    )
+    target_link_libraries(test_edge_hash_completeness
+        PRIVATE
+            HighVoronoi::HighVoronoi
+            Threads::Threads
+    )
+    add_test(
+        NAME test_edge_hash_completeness
+        COMMAND test_edge_hash_completeness
+    )
+
+    add_executable(test_compute_voronoi_unbounded_completeness
+        tests/test_compute_voronoi_unbounded_completeness_20260814.cpp
+    )
+    target_link_libraries(test_compute_voronoi_unbounded_completeness
+        PRIVATE
+            HighVoronoi::HighVoronoi
+            Threads::Threads
+    )
+    add_test(
+        NAME test_compute_voronoi_unbounded_completeness
+        COMMAND test_compute_voronoi_unbounded_completeness
+    )
+
+    set_tests_properties(
+        test_infinite_edge_storage
+        test_edge_hash_completeness
+        test_compute_voronoi_unbounded_completeness
+        PROPERTIES TIMEOUT 60
+    )
 
 endif()
 
@@ -615,6 +696,33 @@ if(HIGHVORONOI_BUILD_EXAMPLES)
     target_link_libraries(highvoronoi_example_cubic_grid
         PRIVATE
             HighVoronoi::HighVoronoi
+    )
+
+    add_executable(example_parallel_cast
+        examples/parallel/parallel_cast.cpp
+    )
+    target_link_libraries(example_parallel_cast
+        PRIVATE
+            HighVoronoi::HighVoronoi
+            Threads::Threads
+    )
+
+    add_executable(example_parallel_mesh
+        examples/parallel/parallel_mesh.cpp
+    )
+    target_link_libraries(example_parallel_mesh
+        PRIVATE
+            HighVoronoi::HighVoronoi
+            Threads::Threads
+    )
+
+    add_executable(example_parallel_combined
+        examples/parallel/parallel_combined.cpp
+    )
+    target_link_libraries(example_parallel_combined
+        PRIVATE
+            HighVoronoi::HighVoronoi
+            Threads::Threads
     )
 endif()
 
