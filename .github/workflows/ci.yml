@@ -32,7 +32,7 @@ jobs:
             -DHIGHVORONOI_BUILD_EXAMPLES=ON
 
       - name: Build
-        run: cmake --build build/release --parallel
+        run: cmake --build build/release --parallel 4
 
       - name: Run tests
         run: |
