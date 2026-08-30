@@ -304,7 +304,7 @@ public:
             }
 
             descent_point_ = mesh_.boundary().project_inside(descent_point_);
-
+            corrected_point_ = descent_point_;
             if (minimal_support_.size() == dimension_ + 1 &&
                 raycaster_.correct_vertex(
                     minimal_support_,

@@ -79,6 +79,7 @@
 #include <highvoronoi/geometry/boundary.hpp>
 #include <highvoronoi/geometry/point.hpp>
 #include <highvoronoi/geometry/voronoi_nodes.hpp>
+#include <highvoronoi/geometry/mesh_index_mapping.hpp>
 
 #include <algorithm>
 #include <cstddef>
@@ -145,7 +146,8 @@ template <typename NodeScalarT,
           int Dim,
           NodeAccessMode BaseNodeAccessMode,
           class DatabaseT,
-          class AddressListT = std::vector<std::size_t>>
+          class AddressListT = std::vector<std::size_t>,
+          class IndexMappingT = VirtualIndexMapping<IndexT>>
 class AbstractMesh {
     static_assert(Dim == Dynamic || Dim > 0,
                   "Mesh dimension must be positive or highvoronoi::Dynamic.");
@@ -167,11 +169,22 @@ public:
     using Sigma = std::vector<Index>;
     using DeletedNodeList = std::vector<Index>;
     using AddressList = AddressListT;
+    using IndexMapping = IndexMappingT;
 
+    static constexpr bool UsesVirtualIndexMapping =
+        IndexMapping::uses_virtual_dispatch;
     static constexpr int DimensionAtCompileTime = Dim;
     static constexpr NodeAccessMode NodeMode = BaseNodeAccessMode;
     static constexpr NodeAccessMode ExtendedNodeMode =
         detail::ExtendedNodeAccessModeV<BaseNodeAccessMode>;
+
+    [[nodiscard]] IndexMapping& index_mapping() noexcept {
+        return index_mapping_;
+    }
+
+    [[nodiscard]] const IndexMapping& index_mapping() const noexcept {
+        return index_mapping_;
+    }
 
     using NodesAccess = detail::NodeAccessBase<
         NodeMode,
@@ -770,7 +783,7 @@ public:
         Index public_node) const {
         require_public_node(public_node);
         const Index internal_node =
-            public_node_to_internal_impl(public_node);
+            map_public_node_to_internal(public_node);
         return SingleVertexRange(
             *this,
             primary_vertex_addresses_impl(internal_node));
@@ -783,7 +796,7 @@ public:
         Index public_node) const {
         require_public_node(public_node);
         const Index internal_node =
-            public_node_to_internal_impl(public_node);
+            map_public_node_to_internal(public_node);
         return SingleVertexRange(
             *this,
             secondary_vertex_addresses_impl(internal_node));
@@ -796,7 +809,7 @@ public:
     vertices(Index public_node) const {
         require_public_node(public_node);
         const Index internal_node =
-            public_node_to_internal_impl(public_node);
+            map_public_node_to_internal(public_node);
         return CombinedVertexRange(
             *this,
             CombinedAddressSource(
@@ -1127,6 +1140,14 @@ protected:
      */
     explicit AbstractMesh(Index runtime_dimension)
         : dimension_(checked_dimension(runtime_dimension)),
+          index_mapping_(),
+          erase_position_buffer_(make_vertex_point()) {}
+
+    explicit AbstractMesh(
+        Index runtime_dimension,
+        IndexMapping index_mapping)
+        : dimension_(checked_dimension(runtime_dimension)),
+          index_mapping_(std::move(index_mapping)),
           erase_position_buffer_(make_vertex_point()) {}
 
     // ---------------------------------------------------------------------
@@ -1138,7 +1159,7 @@ protected:
         const AbstractMesh& mesh,
         Index public_node) {
         mesh.require_public_node(public_node);
-        return mesh.public_node_to_internal_impl(public_node);
+        return mesh.map_public_node_to_internal(public_node);
     }
 
     /** @brief Map another mesh's internal node to public form if still visible. */
@@ -1149,7 +1170,7 @@ protected:
             throw std::out_of_range(
                 "Internal node index out of range.");
         }
-        return mesh.internal_node_to_public_impl(internal_node);
+        return mesh.map_internal_node_to_public(internal_node);
     }
 
     /** @brief Access another compatible mesh's mutable database. */
@@ -1277,6 +1298,25 @@ private:
     [[nodiscard]] virtual Index
     internal_node_count_impl() const noexcept = 0;
 
+    /** @brief Policy-aware public-to-internal mapping. */
+    [[nodiscard]] Index map_public_node_to_internal(Index public_node) const {
+        if constexpr (UsesVirtualIndexMapping) {
+            return public_node_to_internal_impl(public_node);
+        } else {
+            return index_mapping_.public_to_internal(public_node);
+        }
+    }
+
+    /** @brief Policy-aware internal-to-public mapping. */
+    [[nodiscard]] std::optional<Index>
+    map_internal_node_to_public(Index internal_node) const {
+        if constexpr (UsesVirtualIndexMapping) {
+            return internal_node_to_public_impl(internal_node);
+        } else {
+            return index_mapping_.internal_to_public(internal_node);
+        }
+    }
+
     /** @brief Required: map a public ordinary node to stable internal form. */
     [[nodiscard]] virtual Index
     public_node_to_internal_impl(Index public_node) const = 0;
@@ -1351,7 +1391,7 @@ private:
         Index public_index) const {
         const Index public_nodes = size();
         if (public_index < public_nodes) {
-            return public_node_to_internal_impl(public_index);
+            return map_public_node_to_internal(public_index);
         }
 
         const Index plane = static_cast<Index>(
@@ -1398,7 +1438,7 @@ private:
                 "Internal index is neither a node nor a boundary mirror.");
         }
 
-        return internal_node_to_public_impl(internal_index);
+        return map_internal_node_to_public(internal_index);
     }
 
     /**
@@ -1513,7 +1553,7 @@ private:
             if (predicate(public_index, node)) {
                 deleted_public_nodes.push_back(public_index);
                 deleted_internal_nodes.push_back(
-                    public_node_to_internal_impl(public_index));
+                    map_public_node_to_internal(public_index));
             }
         }
     }
@@ -1627,6 +1667,7 @@ private:
     }
 
     Index dimension_;
+    IndexMapping index_mapping_;
     Sigma erase_sigma_buffer_;
     VertexPoint erase_position_buffer_;
 };

@@ -3,6 +3,7 @@
 #include <highvoronoi/detail/locks.hpp>
 
 #include <algorithm>
+#include <type_traits>
 #include <utility>
 
 namespace highvoronoi {
@@ -12,6 +13,17 @@ namespace highvoronoi {
  *
  * @tparam DataT Vector-like data container.
  * @tparam LockT Read/write lock type.
+ *
+ * @par Structural moves
+ * The contained lock is deliberately not moved. Moving an address list moves
+ * only its data and leaves the destination with its own default-constructed
+ * lock. This permits containers such as `std::vector<ReadWriteAddressList>` to
+ * reallocate during structural mesh changes.
+ *
+ * Such structural moves require external synchronization: neither the source
+ * nor the destination may be accessed concurrently while a move is performed.
+ * This matches the mesh mutation contract, where node insertion/removal occurs
+ * outside parallel ComputeVoronoi phases.
  */
 template <class DataT, class LockT>
 class ReadWriteAddressList final {
@@ -20,6 +32,34 @@ public:
     using size_type = typename DataT::size_type;
 
     ReadWriteAddressList() = default;
+
+    ReadWriteAddressList(const ReadWriteAddressList&) = delete;
+    ReadWriteAddressList& operator=(const ReadWriteAddressList&) = delete;
+
+    /**
+     * @brief Move only the protected payload and create a fresh destination lock.
+     *
+     * No lock state is transferred. External synchronization must guarantee that
+     * `other` is not concurrently accessed while this structural move occurs.
+     */
+    ReadWriteAddressList(ReadWriteAddressList&& other)
+        noexcept(std::is_nothrow_move_constructible_v<DataT>)
+        : data_(std::move(other.data_)),
+          lock_() {}
+
+    /**
+     * @brief Move only the protected payload while retaining this object's lock.
+     *
+     * No lock state is transferred. External synchronization must guarantee that
+     * neither object is concurrently accessed while this structural move occurs.
+     */
+    ReadWriteAddressList& operator=(ReadWriteAddressList&& other)
+        noexcept(std::is_nothrow_move_assignable_v<DataT>) {
+        if (this != &other) {
+            data_ = std::move(other.data_);
+        }
+        return *this;
+    }
 
     [[nodiscard]] size_type size() const {
         detail::ReadLockGuard<LockT> guard(lock_);

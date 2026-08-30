@@ -296,6 +296,8 @@ void test_cubical_grid_compute() {
               << verification.error_count() << '\n';
 
     check(verification.valid(), "all stored cubical-grid vertices are consistent");
+    check(highvoronoi::verify_mesh_complete(mesh, Scalar{1e-10}, true).complete(),
+      "cubical-grid mesh is topologically complete");
 }
 
 } // namespace

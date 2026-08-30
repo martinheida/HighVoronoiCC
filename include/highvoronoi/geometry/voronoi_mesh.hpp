@@ -125,6 +125,12 @@ using MeshAddressList = ReadWriteAddressList<
 
 } // namespace detail
 
+template <class MeshT, class AffectedVectorT>
+class IncrementalVoronoiComputeMesh;
+
+template <class MeshT, class AffectedVectorT>
+struct IncrementalVoronoiBackend;
+
 /**
  * @brief Basic concrete Voronoi mesh with stable stored nodes.
  *
@@ -149,12 +155,15 @@ class VoronoiMesh final
           Dim,
           NodeAccessMode::Stored,
           DatabaseT,
-          detail::MeshAddressList<DatabaseT>> {
+          detail::MeshAddressList<DatabaseT>,
+          DenseIndexMapping<typename DatabaseT::Index>> {
 public:
     using Database = DatabaseT;
     using NodeScalar = NodeScalarT;
     using VertexScalar = typename Database::Scalar;
     using Index = typename Database::Index;
+
+    using IndexMapping = DenseIndexMapping<Index>;
 
     using Base = AbstractMesh<
         NodeScalar,
@@ -163,7 +172,8 @@ public:
         Dim,
         NodeAccessMode::Stored,
         Database,
-        detail::MeshAddressList<Database>>;
+        detail::MeshAddressList<Database>,
+        IndexMapping>;
 
     using Address = typename Base::Address;
     using AddressList = typename Base::AddressList;
@@ -174,6 +184,7 @@ public:
         "VoronoiMesh address lists must store database addresses, not node indices.");
     using NodesAccess = typename Base::NodesAccess;
     using ExtendedNodesAccess = typename Base::ExtendedNodesAccess;
+    using NodePoint = typename Base::NodePoint;
     using VertexPoint = typename Base::VertexPoint;
     using Sigma = typename Base::Sigma;
 
@@ -199,16 +210,18 @@ public:
         InternalNodes nodes,
         BoundaryType boundary,
         std::shared_ptr<Database> database)
-        : Base(nodes.dimension()),
+        : Base(
+              nodes.dimension(),
+              IndexMapping::identity(nodes.size())),
           internal_nodes_(std::move(nodes)),
-          public_to_internal_(make_identity_mapping(internal_nodes_.size())),
-          internal_to_public_(public_to_internal_),
           primary_address_lists_(
               static_cast<std::size_t>(internal_nodes_.size())),
           secondary_address_lists_(
               static_cast<std::size_t>(internal_nodes_.size())),
           extended_nodes_(
-              PublicNodes(internal_nodes_, public_to_internal_),
+              PublicNodes(
+                  internal_nodes_,
+                  this->index_mapping().public_to_internal_data()),
               std::move(boundary)),
           database_(require_database(std::move(database))) {}
 
@@ -263,7 +276,123 @@ public:
         return database_;
     }
 
+    // ---------------------------------------------------------------------
+    // Stable-node mutation API used by non-periodic incremental algorithms
+    // ---------------------------------------------------------------------
+
+    /** @brief Map one current public node to its stable internal slot. */
+    [[nodiscard]] Index public_node_to_internal(Index public_node) const {
+        if (public_node >= this->size()) {
+            throw std::out_of_range(
+                "VoronoiMesh public node index out of range.");
+        }
+        return this->index_mapping().public_to_internal(public_node);
+    }
+
+    /** @brief Map one stable internal slot to current public numbering. */
+    [[nodiscard]] std::optional<Index>
+    internal_node_to_public(Index internal_node) const {
+        if (internal_node >= internal_nodes_.size()) {
+            throw std::out_of_range(
+                "VoronoiMesh internal node index out of range.");
+        }
+        return this->index_mapping().internal_to_public(internal_node);
+    }
+
+    /**
+     * @brief Append one ordinary node as a new stable internal slot.
+     *
+     * Existing stable indices and stored signatures are unchanged. Structural
+     * growth requires external synchronization and must not overlap a running
+     * ComputeVoronoi phase.
+     */
+    [[nodiscard]] Index append_node(const NodePoint& point) {
+        std::vector<NodePoint> points;
+        points.reserve(1);
+        points.push_back(point);
+        return append_nodes(points).front();
+    }
+
+    /**
+     * @brief Append ordinary nodes while preserving all existing stable slots.
+     *
+     * Deleted internal slots remain tombstones; they are never recycled. New
+     * stable slots are appended after the complete existing internal range and
+     * become new public nodes at the end of the current dense public numbering.
+     * Existing vertex records are deliberately left untouched.
+     *
+     * @return Stable internal indices of the appended nodes.
+     */
+    [[nodiscard]] std::vector<Index> append_nodes(
+        const std::vector<NodePoint>& points) {
+        if (points.empty()) {
+            return {};
+        }
+        if (public_numbering_dirty_) {
+            throw std::logic_error(
+                "VoronoiMesh cannot append while public numbering is dirty.");
+        }
+
+        const std::size_t old_internal =
+            static_cast<std::size_t>(internal_nodes_.size());
+        const std::size_t old_public =
+            static_cast<std::size_t>(this->size());
+        const std::size_t extra = points.size();
+        const std::size_t boundary_count =
+            static_cast<std::size_t>(extended_nodes_.boundary().size());
+        const std::size_t maximum =
+            static_cast<std::size_t>((std::numeric_limits<Index>::max)());
+
+        // max(Index) is invalid. Boundary mirrors occupy the values directly
+        // below it, so ordinary stable indices must remain below that range.
+        if (boundary_count > maximum ||
+            old_internal > maximum - boundary_count ||
+            extra > maximum - boundary_count - old_internal) {
+            throw std::overflow_error(
+                "VoronoiMesh append exceeds stable internal Index capacity.");
+        }
+
+        const std::size_t new_internal = old_internal + extra;
+
+        std::vector<Index> public_to_internal =
+            this->index_mapping().public_to_internal_data();
+        std::vector<Index> internal_to_public =
+            this->index_mapping().internal_to_public_data();
+        public_to_internal.reserve(old_public + extra);
+        internal_to_public.reserve(new_internal);
+
+        internal_nodes_.resize(static_cast<Index>(new_internal));
+        primary_address_lists_.resize(new_internal);
+        secondary_address_lists_.resize(new_internal);
+
+        std::vector<Index> appended;
+        appended.reserve(extra);
+
+        for (std::size_t offset = 0; offset < extra; ++offset) {
+            const Index internal = static_cast<Index>(old_internal + offset);
+            const Index public_node = static_cast<Index>(old_public + offset);
+
+            internal_nodes_.set(internal, points[offset]);
+            public_to_internal.push_back(internal);
+            internal_to_public.push_back(public_node);
+            appended.push_back(internal);
+        }
+
+        this->index_mapping().assign(
+            std::move(public_to_internal),
+            std::move(internal_to_public));
+        reset_extended_nodes();
+        return appended;
+    }
+
+
 private:
+    template <class, class>
+    friend class IncrementalVoronoiComputeMesh;
+
+    template <class, class>
+    friend struct IncrementalVoronoiBackend;
+
     // ---------------------------------------------------------------------
     // AbstractMesh primitive hooks
     // ---------------------------------------------------------------------
@@ -307,7 +436,9 @@ private:
         }
 
         extended_nodes_ = ExtendedNodes(
-            PublicNodes(internal_nodes_, public_to_internal_),
+            PublicNodes(
+                  internal_nodes_,
+                  this->index_mapping().public_to_internal_data()),
             std::move(boundary));
     }
 
@@ -332,8 +463,7 @@ private:
     /** @brief Map one dense public node index to stable internal numbering. */
     [[nodiscard]] Index
     public_node_to_internal_impl(Index public_node) const override {
-        return public_to_internal_.at(
-            static_cast<std::size_t>(public_node));
+        return this->index_mapping().public_to_internal(public_node);
     }
 
     /**
@@ -343,12 +473,7 @@ private:
      */
     [[nodiscard]] std::optional<Index>
     internal_node_to_public_impl(Index internal_node) const override {
-        const Index public_index = internal_to_public_.at(
-            static_cast<std::size_t>(internal_node));
-        if (public_index == deleted_node_marker()) {
-            return std::nullopt;
-        }
-        return public_index;
+        return this->index_mapping().internal_to_public(internal_node);
     }
 
     /** @brief Return addresses primarily owned by one internal node. */
@@ -403,13 +528,11 @@ private:
      */
     void mark_internal_node_deleted_impl(
         Index internal_node) override {
-        Index& public_index = internal_to_public_.at(
-            static_cast<std::size_t>(internal_node));
-        if (public_index == deleted_node_marker()) {
+        if (this->index_mapping().is_deleted(internal_node)) {
             return;
         }
 
-        public_index = deleted_node_marker();
+        this->index_mapping().mark_deleted(internal_node);
         public_numbering_dirty_ = true;
     }
 
@@ -435,21 +558,12 @@ private:
     // Numbering and cleanup helpers
     // ---------------------------------------------------------------------
 
-    /** @brief Build the initial identity mapping. */
-    [[nodiscard]] static std::vector<Index>
-    make_identity_mapping(Index count) {
-        std::vector<Index> result(
-            static_cast<std::size_t>(count));
-        for (Index index = Index{0}; index < count; ++index) {
-            result[static_cast<std::size_t>(index)] = index;
+    /** @brief Validate one stable internal ordinary-node index. */
+    void require_internal_node(Index internal_node) const {
+        if (internal_node >= internal_nodes_.size()) {
+            throw std::out_of_range(
+                "VoronoiMesh internal node index out of range.");
         }
-        return result;
-    }
-
-    /** @brief Sentinel used only in the internal-to-public map. */
-    [[nodiscard]] static constexpr Index
-    deleted_node_marker() noexcept {
-        return std::numeric_limits<Index>::max();
     }
 
     /** @brief Validate and return a non-null shared database. */
@@ -466,35 +580,7 @@ private:
      * @brief Rebuild both numbering maps after one or more node deletions.
      */
     void rebuild_public_numbering() {
-        public_to_internal_.clear();
-        public_to_internal_.reserve(
-            static_cast<std::size_t>(internal_nodes_.size()));
-
-        for (Index internal_index = Index{0};
-             internal_index < internal_nodes_.size();
-             ++internal_index) {
-            if (internal_to_public_[
-                    static_cast<std::size_t>(internal_index)] ==
-                deleted_node_marker()) {
-                continue;
-            }
-            public_to_internal_.push_back(internal_index);
-        }
-
-        std::fill(
-            internal_to_public_.begin(),
-            internal_to_public_.end(),
-            deleted_node_marker());
-
-        for (std::size_t public_position = 0;
-             public_position < public_to_internal_.size();
-             ++public_position) {
-            const Index internal_index =
-                public_to_internal_[public_position];
-            internal_to_public_[
-                static_cast<std::size_t>(internal_index)] =
-                static_cast<Index>(public_position);
-        }
+        this->index_mapping().rebuild();
     }
 
     /**
@@ -503,7 +589,9 @@ private:
     void reset_extended_nodes() {
         BoundaryType boundary_copy = extended_nodes_.boundary();
         extended_nodes_ = ExtendedNodes(
-            PublicNodes(internal_nodes_, public_to_internal_),
+            PublicNodes(
+                  internal_nodes_,
+                  this->index_mapping().public_to_internal_data()),
             std::move(boundary_copy));
     }
 
@@ -634,8 +722,6 @@ private:
     }
 
     InternalNodes internal_nodes_;
-    std::vector<Index> public_to_internal_;
-    std::vector<Index> internal_to_public_;
     std::vector<AddressList> primary_address_lists_;
     std::vector<AddressList> secondary_address_lists_;
     AddressList infinite_edge_addresses_;

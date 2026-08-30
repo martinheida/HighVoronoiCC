@@ -22,6 +22,9 @@ compile_commands.json
 # Local development files
 highvoronoicc.code-workspace
 create_highvoronoi_bundles.sh
+run.sh
+runall.sh
 
 # Generated ChatGPT source bundles
 chatgpt_sources_*.txt
+chatgpt_design*

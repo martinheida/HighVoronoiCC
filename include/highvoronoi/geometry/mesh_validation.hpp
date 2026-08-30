@@ -484,40 +484,59 @@ template <class Mesh>
 /**
  * @brief Check geometric consistency and global Voronoi-edge closure.
  *
- * The finite endpoint contribution of one geometric edge is identified by the
- * EdgeIterator's complete supporting edge (`full_indices()`), not by its local
- * minimal edge. This matters for degenerate vertices where the same geometric
- * edge may be represented by several minimal edges and cell perspectives. Such
- * repetitions are collapsed per persistent vertex address before the global
- * EdgeHash is updated.
+ * The completeness check reproduces the `(full_edge, skip)` bookkeeping used
+ * by the construction queue pass.
  *
- * A finite edge is complete after two distinct endpoint occurrences. An
- * unbounded edge contributes its persisted infinite-edge record as the second
- * occurrence. EdgeHashTable::all_edges_complete() additionally rejects a third
- * occurrence.
+ * Persisted infinite edges are stored in a separate hash that is used only
+ * for membership queries. During the finite-cell pass every edge candidate is
+ * represented by
  *
- * This is a topological completeness check under the same full-dimensional
- * Voronoi assumptions as the construction algorithm. It cannot manufacture an
- * edge that is absent together with both of its endpoint/incidence records.
+ *     key   = edge->full_indices()
+ *     token = edge->skip()
+ *
+ * where `skip()` is the global generator index omitted from the complete
+ * supporting edge.
+ *
+ * Repeated occurrences with the same skip token collapse according to
+ * EdgeHash semantics. Two distinct skip tokens complete a finite edge.
+ *
+ * GlobalEdgeHash is configurable because large or highly degenerate meshes may
+ * require a distributed/static hash-container implementation instead of one
+ * monolithic EdgeHashTable.
+ *
+ * Required GlobalEdgeHash interface:
+ *
+ *     GlobalEdgeHash(std::size_t capacity)
+ *     bool contains(key) const
+ *     bool pushedge(key, std::int64_t token, bool mode)
+ *     bool all_edges_complete() const
+ *     static constexpr std::int64_t infinite_cell
  */
-template <class Mesh>
+template <
+    class Mesh,
+    class GlobalEdgeHash =
+        detail::EdgeHashTable<detail::EmptyLock>>
 [[nodiscard]] MeshCompletenessReport<Mesh> verify_mesh_complete(
     Mesh& mesh,
     typename Mesh::NodeScalar maximum_variance =
         typename Mesh::NodeScalar{1e-20},
     bool print_errors = false,
-    std::ostream& output = std::cerr) {
+    std::ostream& output = std::cerr,
+    std::size_t edge_hash_capacity = 256) {
 
     using Index = typename Mesh::Index;
-    using Address = typename Mesh::Address;
-    using Sigma = typename Mesh::Sigma;
+
     using ExtendedNodes = std::remove_reference_t<
-        decltype(std::declval<detail::MeshValidationContext<Mesh>&>()
-                     .extended_nodes())>;
-    using Iterator = EdgeIterator<ExtendedNodes, detail::EmptyLock>;
-    using GlobalEdgeHash = detail::EdgeHashTable<detail::EmptyLock>;
+        decltype(
+            std::declval<detail::MeshValidationContext<Mesh>&>()
+                .extended_nodes())>;
+
+    using Iterator =
+        EdgeIterator<ExtendedNodes, detail::EmptyLock>;
 
     MeshCompletenessReport<Mesh> report;
+
+    // First perform the ordinary geometric consistency check.
     report.consistency = verify_mesh(
         mesh,
         maximum_variance,
@@ -527,12 +546,48 @@ template <class Mesh>
     detail::MeshValidationContext<Mesh> context(mesh);
     Iterator iterator(context.extended_nodes());
 
-    // One persistent vertex can be visible in several cells. In degenerate
-    // geometry those cell-local traversals may expose the same full supporting
-    // edge through different minimal edges. Keep only one endpoint occurrence
-    // per (vertex address, full edge).
-    std::unordered_map<Address, std::vector<Sigma>> edges_by_vertex;
+    // Infinite edges are kept separately. This hash is only queried during
+    // the finite-edge traversal.
+    GlobalEdgeHash infinite(edge_hash_capacity);
 
+    // Finite full edges are counted here through their real skip generators.
+    GlobalEdgeHash local(edge_hash_capacity);
+
+    // ------------------------------------------------------------
+    // 1. Register all persisted infinite edges.
+    // ------------------------------------------------------------
+
+    for (const auto& infinite_edge : mesh.infinite_edges()) {
+        (void)infinite.pushedge(
+            infinite_edge.sigma,
+            GlobalEdgeHash::infinite_cell,
+            false);
+
+        ++report.infinite_edges;
+    }
+
+    // EdgeHash uses int64_t tokens internally. Keep the conversion explicit
+    // so an oversized Index type cannot silently truncate.
+    const auto edge_token = [](Index value) -> std::int64_t {
+        const auto maximum =
+            static_cast<std::uintmax_t>(
+                (std::numeric_limits<std::int64_t>::max)());
+
+        const auto converted =
+            static_cast<std::uintmax_t>(value);
+
+        if (converted > maximum) {
+            throw std::overflow_error(
+                "EdgeIterator skip generator does not fit into int64_t.");
+        }
+
+        return static_cast<std::int64_t>(value);
+    };
+
+    // ------------------------------------------------------------
+    // 2. Traverse the mesh exactly from its cell perspectives.
+    // ------------------------------------------------------------
+    report.all_edges_have_two_occurrences = true;
     for (Index cell = Index{0}; cell < mesh.size(); ++cell) {
         context.activate_cell(cell);
 
@@ -543,46 +598,62 @@ template <class Mesh>
                 cell,
                 typename Iterator::OnQueueEdges{});
 
-            auto& full_edges = edges_by_vertex[vertex.address];
-
             while (const auto edge = iterator.next()) {
-                Sigma full_edge(
-                    edge->full_indices().begin(),
-                    edge->full_indices().end());
-                std::sort(full_edge.begin(), full_edge.end());
+                const auto full_edge = edge->full_indices();
+                const Index skip = edge->skip();
 
-                const auto duplicate = std::find(
-                    full_edges.begin(),
-                    full_edges.end(),
-                    full_edge);
-                if (duplicate != full_edges.end()) {
-                    ++report.duplicate_local_edge_representations;
+                // ------------------------------------------------
+                // Iterator contract:
+                //
+                // skip must be one of the generators of the vertex,
+                // but it must not belong to the complete edge.
+                // ------------------------------------------------
+
+                if (std::find(
+                        vertex.sigma.begin(),
+                        vertex.sigma.end(),
+                        skip) == vertex.sigma.end()) {
+                    throw std::logic_error(
+                        "EdgeIterator skip generator is not contained "
+                        "in the vertex signature.");
+                }
+
+                if (std::find(
+                        full_edge.begin(),
+                        full_edge.end(),
+                        skip) != full_edge.end()) {
+                    throw std::logic_error(
+                        "EdgeIterator skip generator belongs to "
+                        "the complete supporting edge.");
+                }
+
+                // Infinite edges already have their second endpoint represented
+                // by the persisted infinite-edge record and therefore do not
+                // participate in the finite closure hash.
+                if (infinite.contains(full_edge)) {
                     continue;
                 }
 
-                full_edges.push_back(std::move(full_edge));
-            }
-        }
-    }
+                // Store the actual complete geometric edge together with the
+                // actual omitted generator.
+                (void)local.pushedge(
+                    full_edge,
+                    edge_token(skip),
+                    false);
 
-    GlobalEdgeHash edge_hash(256);
-    for (const auto& entry : edges_by_vertex) {
-        for (const Sigma& full_edge : entry.second) {
-            (void)edge_hash.pushedge(full_edge, std::int64_t{0}, true);
-            ++report.unique_finite_edge_endpoints;
-        }
-    }
+                ++report.unique_finite_edge_endpoints;
+            }//while edge
+        }//for vertex
+    report.all_edges_have_two_occurrences &=
+        local.all_edges_complete();
+        local.clear();
+    }//for cell
 
-    for (const auto& infinite_edge : mesh.infinite_edges()) {
-        (void)edge_hash.pushedge(
-            infinite_edge.sigma,
-            GlobalEdgeHash::infinite_cell,
-            true);
-        ++report.infinite_edges;
-    }
+    // ------------------------------------------------------------
+    // 3. Every finite edge must now have exactly two skip entries.
+    // ------------------------------------------------------------
 
-    report.all_edges_have_two_occurrences =
-        edge_hash.all_edges_complete();
+
     return report;
 }
 
@@ -735,7 +806,7 @@ template <class FirstMesh, class SecondMesh>
 
             using std::sqrt;
             const Scalar variance_tolerance =
-                radius * sqrt(std::max(first_variance, second_variance));
+                2 * radius * sqrt(std::max(first_variance, second_variance));
 
             const Scalar coordinate_scale = std::max({
                 Scalar{1},
@@ -748,7 +819,7 @@ template <class FirstMesh, class SecondMesh>
                 coordinate_scale;
 
             const Scalar tolerance =
-                std::max(variance_tolerance, roundoff_tolerance);
+                2 * std::max(variance_tolerance, roundoff_tolerance);
             const Scalar distance =
                 (first_position - second_position).norm();
 

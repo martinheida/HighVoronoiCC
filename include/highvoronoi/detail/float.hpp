@@ -36,29 +36,21 @@ static_assert(
 // -----------------------------------------------------------------------------
 // Erweiterte Präzision
 // -----------------------------------------------------------------------------
+//
+// Numerical fallback code deliberately uses exactly two precision levels:
+// Float64 for the normal path and software binary128 for the rare robust path.
+// In particular, `long double` is not used as an intermediate level because
+// its precision is platform dependent (and may equal double).
 
-inline constexpr int required_extra_decimal_digits = 5;
-
-using MultiprecisionFloat =
+using Float128 =
     boost::multiprecision::cpp_bin_float_quad;
 
-inline constexpr bool long_double_is_sufficient =
-    std::numeric_limits<long double>::is_specialized &&
-    std::numeric_limits<long double>::digits10 >=
-        std::numeric_limits<Float64>::digits10
-        + required_extra_decimal_digits;
-
-using ExtendedFloat = std::conditional_t<
-    long_double_is_sufficient,
-    long double,
-    MultiprecisionFloat
->;
+using MultiprecisionFloat = Float128;
+using ExtendedFloat = Float128;
 
 static_assert(
-    std::numeric_limits<ExtendedFloat>::digits10 >=
-        std::numeric_limits<Float64>::digits10
-        + required_extra_decimal_digits,
-    "ExtendedFloat does not provide enough additional precision."
+    std::numeric_limits<Float128>::digits >= 113,
+    "HighVoronoi Float128 must provide at least IEEE-754 binary128 precision."
 );
 
 // -----------------------------------------------------------------------------

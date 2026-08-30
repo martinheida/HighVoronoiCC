@@ -1,3 +1,4 @@
+
 #pragma once
 
 /**
@@ -10,8 +11,13 @@
  *   generators;
  * - `FastEdgeIterator` for a degenerate vertex with more generators.
  *
- * The degenerate branch intentionally follows the Julia algorithm rather than
- * replacing it by an equivalent convex-cone solver.  In particular it keeps:
+ * The degenerate branch follows the Julia algorithm except for one deliberate
+ * correction in `scan_for_edge`: a primary generator is rejected only after
+ * every admissible supporting-face completion has been tried.  The Julia code
+ * rejects the primary after one failed greedy completion, which is weaker than
+ * the existence test required by Lemma 2.18 of the HighVoronoi paper.
+ *
+ * Apart from that correction, the implementation keeps:
  *
  * 1. the hierarchy of projected FEI levels `d, d-1, ..., 2`;
  * 2. `scan_for_edge` and the recursive discovery of valid rays;
@@ -110,11 +116,12 @@ public:
     }
 
     /**
-     * Julia-compatible second iterator value.
+     * Global generator omitted from the complete supporting edge.
      *
-     * General branch: omitted global generator.
-     * Degenerate branch: zero-based local position corresponding to Julia's
-     * `dropped` value (which is one-based there).
+     * Both iterator branches expose the same semantics here: `skip()` is a
+     * generator index from the current vertex signature, not a local position
+     * inside an FEI buffer. Consequently `skip()` must not occur in
+     * `full_indices()`.
      */
     [[nodiscard]] Index skip() const noexcept { return skip_; }
 
@@ -648,6 +655,13 @@ private:
         std::vector<std::size_t> edge_buffer;
         std::vector<std::uint8_t> free_nodes;
         std::vector<std::uint8_t> valid_nodes;
+
+        // Transient retry state used only by scan_for_edge.  One row per
+        // Gram-Schmidt basis slot, one flag per signature position.  It is
+        // deliberately not part of FEIStorage: retries never survive a
+        // completed supporting-face search.
+        std::vector<std::uint8_t> tried_candidates;
+
         std::vector<std::size_t> active_nodes;
 
         // Julia FEIData.index: [valid_rays, current_primary,
@@ -694,6 +708,7 @@ private:
             edge_buffer.resize(count);
             free_nodes.resize(count);
             valid_nodes.resize(count);
+            tried_candidates.resize(ambient_dim * count);
 
             resize_points(local_xs, count);
             resize_points(local_cone, count);
@@ -969,7 +984,7 @@ private:
         // Exact top-level Julia ownership shortcut:
         // _Cell_entry > lsig - dim in one-based indexing.
         if (step == 0 &&
-            cell_entry >= lsig - dimension_ &&
+            cell_entry > lsig - dimension_ &&
             !all_rays) {
             level.valid_rays() = 1;
             if (storage != nullptr) {
@@ -1348,44 +1363,22 @@ private:
                 }
             }
 
-            auto candidate = max_angle_candidate(level);
-            bool broken = false;
+            // Lemma 2.18 asks whether *any* supporting face containing the
+            // current primary exists.  The Julia implementation tests only
+            // one greedy max-angle completion and rejects the primary when
+            // that single completion fails.  Search the remaining
+            // completions before making that permanent decision.
+            const bool found = find_supporting_face(
+                level,
+                std::size_t{1},
+                maximum_allowed_angle,
+                first_entry,
+                lsig,
+                full_edge_count);
 
-            for (std::size_t basis = 1;
-                 basis + 1 < cdim;
-                 ++basis) {
-
-                if (candidate.second == npos) {
-                    broken = true;
-                    break;
-                }
-
-                level.rays[basis] =
-                    level.local_cone[candidate.second];
-                rotate2(level.rays, basis, cdim);
-                level.active_nodes[basis + 1] = candidate.second;
-                candidate = max_angle_candidate(level);
-            }
-
-            if (!broken) {
-                const Scalar edge_tolerance = (std::max)(
-                    max_basis_angle(level.rays, cdim),
-                    maximum_allowed_angle);
-
-                full_edge_count = get_full_edge(
-                    level.rays,
-                    level.local_cone,
-                    level.edge_buffer,
-                    first_entry,
-                    lsig,
-                    cdim,
-                    edge_tolerance);
-
-                broken = full_edge_count == 0;
-            }
-
-            if (broken) {
-                // Julia only frees my_minimal[2] on a broken scan.
+            if (!found) {
+                // No admissible completion of this primary generated a
+                // supporting face.  Only now is the primary exhausted.
                 const std::size_t rejected = level.active_nodes[1];
                 if (rejected != npos) {
                     level.free_nodes[rejected] = 0;
@@ -1404,6 +1397,92 @@ private:
         }
     }
 
+    /**
+     * Search all max-angle ordered completions of one fixed primary.
+     *
+     * `basis` is the next Gram-Schmidt basis slot to fill.  Every recursion
+     * level owns its own `tried_candidates` mask.  Therefore a candidate that
+     * fails after one partial basis is excluded only for that partial basis;
+     * it remains available after backtracking to an earlier basis choice.
+     */
+    [[nodiscard]] bool find_supporting_face(
+        FastLevel& level,
+        std::size_t basis,
+        Scalar maximum_allowed_angle,
+        std::size_t first_entry,
+        std::size_t lsig,
+        std::size_t& full_edge_count) {
+
+        const std::size_t cdim = level.current_dim;
+
+        if (basis + 1 >= cdim) {
+            const Scalar edge_tolerance = (std::max)(
+                max_basis_angle(level.rays, cdim),
+                maximum_allowed_angle);
+
+            full_edge_count = get_full_edge(
+                level.rays,
+                level.local_cone,
+                level.edge_buffer,
+                first_entry,
+                lsig,
+                cdim,
+                edge_tolerance);
+
+            return full_edge_count != 0;
+        }
+
+        const std::size_t tried_offset = basis * lsig;
+        auto tried_begin =
+            level.tried_candidates.begin() +
+            static_cast<std::ptrdiff_t>(tried_offset);
+        std::fill(
+            tried_begin,
+            tried_begin + static_cast<std::ptrdiff_t>(lsig),
+            std::uint8_t{0});
+
+        for (;;) {
+            const auto candidate =
+                max_angle_candidate(level, basis);
+
+            if (candidate.second == npos) {
+                full_edge_count = 0;
+                return false;
+            }
+
+            // This candidate is consumed only on the current search level.
+            // If the completed plane is not supporting, the next iteration
+            // tries the next-best candidate while keeping the primary alive.
+            level.tried_candidates[tried_offset + candidate.second] = 1;
+
+            // rotate2 modifies only rays[basis] and the current normal.
+            // Keep the backtracking state allocation-free.
+            const Point saved_basis = level.rays[basis];
+            const Point saved_normal = level.rays[cdim - 1];
+            const std::size_t saved_active =
+                level.active_nodes[basis + 1];
+
+            level.rays[basis] =
+                level.local_cone[candidate.second];
+            rotate2(level.rays, basis, cdim);
+            level.active_nodes[basis + 1] = candidate.second;
+
+            if (find_supporting_face(
+                    level,
+                    basis + 1,
+                    maximum_allowed_angle,
+                    first_entry,
+                    lsig,
+                    full_edge_count)) {
+                return true;
+            }
+
+            level.rays[basis] = saved_basis;
+            level.rays[cdim - 1] = saved_normal;
+            level.active_nodes[basis + 1] = saved_active;
+        }
+    }
+
     [[nodiscard]] bool next_ray_try(FastLevel& level) const {
         while (level.current_primary() < level.sig.size() &&
                level.free_nodes[level.current_primary()] == 0) {
@@ -1413,8 +1492,12 @@ private:
     }
 
     [[nodiscard]] std::pair<Scalar, std::size_t>
-    max_angle_candidate(const FastLevel& level) const {
+    max_angle_candidate(
+        const FastLevel& level,
+        std::size_t basis) const {
+
         const Point& normal = level.rays[level.current_dim - 1];
+        const std::size_t tried_offset = basis * level.sig.size();
 
         Scalar minimum_cos = Scalar{2};
         std::size_t minimum_index = npos;
@@ -1426,7 +1509,8 @@ private:
                 normal.dot(level.local_cone[position]);
 
             if (std::abs(value) <= tolerances_.angle ||
-                active_contains(level.active_nodes, position)) {
+                active_contains(level.active_nodes, position) ||
+                level.tried_candidates[tried_offset + position] != 0) {
                 continue;
             }
 
@@ -1682,7 +1766,9 @@ private:
             level.rays[dim - 1] *= Scalar{-1};
         }
 
-        // Julia's dropped value: position with minimum dot(u, local_xs[i]).
+        // Julia's `dropped` identifies a local FEI position. Keep that local
+        // position internally; next_fast() maps it back to the corresponding
+        // global generator before exposing EdgeView::skip().
         dropped_position = 0;
         Scalar minimum = level.rays[dim - 1].dot(level.local_xs[0]);
         for (std::size_t position = 0;
@@ -1785,13 +1871,27 @@ private:
                 "FastEdgeIterator produced a minimal edge not owned by the active cell.");
         }
 
+        if (dropped_position >= level.sig.size()) {
+            throw std::logic_error(
+                "FastEdgeIterator produced an invalid dropped position.");
+        }
+
+        const Index skipped_generator = level.sig[dropped_position];
+        if (std::find(
+                full_result_.begin(),
+                full_result_.end(),
+                skipped_generator) != full_result_.end()) {
+            throw std::logic_error(
+                "FastEdgeIterator skip generator belongs to full edge.");
+        }
+
         direction_ = -level.rays[dimension_ - 1];
         cycle_error_ = delta_u(level.rays, dimension_);
         if (cycle_error_ > tolerances_.correction) {
             correct_cycle_error(level, direction_);
         }
 
-        return make_view(checked_position_to_index(dropped_position));
+        return make_view(skipped_generator);
     }
 
     /**
@@ -1961,3 +2061,5 @@ private:
 };
 
 } // namespace highvoronoi
+
+

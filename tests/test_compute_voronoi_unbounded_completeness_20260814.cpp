@@ -32,7 +32,10 @@ int main(){
            << " infinite=" << report.infinite_edges
            << " edge closure=" << report.all_edges_have_two_occurrences
            << " complete=" << report.complete() << '\n';
- if (!(report.complete() && report.unique_finite_edge_endpoints==3 && report.infinite_edges==3)) return 1;
+ if (!(report.complete() &&
+      report.unique_finite_edge_endpoints == 0 &&
+      report.infinite_edges == 3))
+    return 1;
  for (const auto& edge : mesh.infinite_edges()) {
      if (!db->erase(edge.address, edge.sigma)) return 2;
      break;

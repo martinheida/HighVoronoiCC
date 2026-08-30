@@ -77,7 +77,8 @@ class ReorderedMeshView final
           MeshT::DimensionAtCompileTime,
           MeshT::NodeMode,
           typename MeshT::Database,
-          typename MeshT::AddressList> {
+          typename MeshT::AddressList,
+          typename MeshT::IndexMapping> {
 public:
     using WrappedMesh = MeshT;
     using IndexView = IndexViewT;
@@ -85,6 +86,7 @@ public:
     using NodeScalar = typename WrappedMesh::NodeScalar;
     using VertexScalar = typename WrappedMesh::VertexScalar;
     using Index = typename WrappedMesh::Index;
+    using IndexMapping = typename WrappedMesh::IndexMapping;
 
     static constexpr int DimensionAtCompileTime =
         WrappedMesh::DimensionAtCompileTime;
@@ -97,7 +99,8 @@ public:
         DimensionAtCompileTime,
         NodeMode,
         Database,
-        typename WrappedMesh::AddressList>;
+        typename WrappedMesh::AddressList,
+        IndexMapping>;
 
     using Address = typename Base::Address;
     using AddressList = typename Base::AddressList;
@@ -389,6 +392,9 @@ private:
 
         Base::mark_node_deleted_in(*mesh_, internal_node);
         current_public = invalid_index();
+        if constexpr (!Base::UsesVirtualIndexMapping) {
+            this->index_mapping().mark_deleted(internal_node);
+        }
         numbering_dirty_ = true;
     }
 
@@ -481,6 +487,12 @@ private:
 
         expected_wrapped_internal_count_ = internal_count;
         expected_wrapped_public_count_ = public_count;
+
+        if constexpr (!Base::UsesVirtualIndexMapping) {
+            this->index_mapping().assign(
+                public_to_internal_,
+                internal_to_public_);
+        }
     }
 
     /**
@@ -509,6 +521,12 @@ private:
             const Index internal = public_to_internal_[public_position];
             internal_to_public_[static_cast<std::size_t>(internal)] =
                 static_cast<Index>(public_position);
+        }
+
+        if constexpr (!Base::UsesVirtualIndexMapping) {
+            this->index_mapping().assign(
+                public_to_internal_,
+                internal_to_public_);
         }
     }
 

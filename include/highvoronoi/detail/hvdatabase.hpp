@@ -72,8 +72,10 @@ public:
     using size_t = std::size_t;
     using UInt16 = std::uint16_t;
 
-    using Scalar = typename DataBaseParams::Scalar;
-    using Index = typename DataBaseParams::Index;
+    using Parameters = DataBaseParams;
+    using Scalar = typename Parameters::Scalar;
+    using Index = typename Parameters::Index;
+    using address_type = std::size_t;
 
     using QueueHash =
         typename detail::QueueHashFromParams<Lock, DataBaseParams>::type;
@@ -223,6 +225,33 @@ public:
     {
         require_index_vector<SigmaVector>();
         return keys.contains(sigma);
+    }
+
+    /**
+     * @brief Register a signature in the persistent identity hash without
+     *        storing a payload record.
+     * @return true iff the signature was newly registered.
+     *
+     * HybridDataBase uses this for vertices supplied by a compute engine so
+     * stored and computed vertices participate in the same duplicate check.
+     */
+    template<class SigmaVector>
+    [[nodiscard]] bool register_signature(const SigmaVector& sigma)
+    {
+        require_index_vector<SigmaVector>();
+        return !keys.pushqueue(sigma, true);
+    }
+
+    /**
+     * @brief Remove a signature from the persistent identity hash without
+     *        touching any payload record.
+     * @return true iff an existing signature was removed.
+     */
+    template<class SigmaVector>
+    [[nodiscard]] bool erase_signature(const SigmaVector& sigma)
+    {
+        require_index_vector<SigmaVector>();
+        return keys.erase(sigma);
     }
 
     /**
@@ -655,3 +684,4 @@ private:
 };
 
 } // namespace highvoronoi
+

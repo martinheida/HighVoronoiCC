@@ -1,3 +1,4 @@
+
 #pragma once
 
 #include "highvoronoi/detail/hash_generators.hpp"
@@ -74,6 +75,37 @@ public:
         WriteLockGuard<Lock> guard(lock_);
         std::fill(occupied_.begin(), occupied_.end(), std::uint8_t{0});
         overfull_ = false;
+    }
+
+    /**
+     * @brief Test whether an edge key is already present without mutating the table.
+     *
+     * The lookup uses the same probabilistic HashGenerator identity as pushedge().
+     * No deletion tombstones exist in EdgeHashTable, therefore probing may stop at
+     * the first unoccupied slot.
+     */
+    template <class Key>
+    [[nodiscard]] bool contains(const Key& key) const
+    {
+        const HashGenerator hash(key);
+        ReadLockGuard<Lock> guard(lock_);
+
+        const std::uint64_t capacity64 =
+            static_cast<std::uint64_t>(table_.size());
+
+        for (std::uint64_t i = 0; i < capacity64; ++i) {
+            const std::size_t idx = hash.index(mask_, i);
+
+            if (occupied_[idx] == 0) {
+                return false;
+            }
+
+            if (table_[idx].hash == hash) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

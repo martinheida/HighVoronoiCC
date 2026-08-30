@@ -224,19 +224,17 @@ public:
     }
 
     /**
-     * @brief Correct a vertex from d+1 supporting generators.
+     * @brief Improve the RayCaster candidate instead of recomputing the vertex.
      *
-     * The equations
+     * The ordinary path factorizes the row-normalized local equal-distance
+     * system once with ColPivHouseholderQR and iterates
      *
-     *   |x-x_i|^2 = |x-x_ref|^2
+     *   A delta = c(r),  r <- r + delta.
      *
-     * reduce to the linear system
-     *
-     *   (x_i-x_ref)^T x = 0.5 (|x_i|^2-|x_ref|^2).
-     *
-     * Solving this system directly is preferable to the Julia normal-equation
-     * CG correction: it is smaller, deterministic and does not square the
-     * condition number.
+     * If the pivot ratio indicates poor conditioning, or if the relative
+     * correction |delta| / |r_initial-p_0| does not converge to the requested
+     * tolerance, the complete correction is repeated directly in Float128.
+     * There is intentionally no platform-dependent intermediate precision.
      */
     template <class Support>
     [[nodiscard]] bool correct_vertex(
@@ -247,13 +245,43 @@ public:
         }
 
         const ExtendedNodes& nodes = tree_.extended_nodes();
-        if (vertex_solver_.solve_vertex(nodes, support, output) &&
-            vertex_variance(support, output) <= parameters_.variance_tolerance) {
+        const Point initial = output;
+
+        const auto ordinary =
+            vertex_solver_.correct_vertex(
+                nodes,
+                support,
+                initial,
+                output,
+                parameters_.vertex_condition_tolerance,
+                parameters_.vertex_correction_relative_tolerance,
+                parameters_.vertex_correction_max_iterations,
+                true);
+
+        if (ordinary.converged) {
             return true;
         }
 
-        return extended_vertex_solver_.solve_vertex(nodes, support, output) &&
-               vertex_variance(support, output) <= parameters_.break_tolerance;
+        // The ordinary corrector leaves output untouched when it does not
+        // converge, so the Float128 path starts from the original RayCaster
+        // candidate rather than from a failed double correction.
+        output = initial;
+        const auto extended =
+            extended_vertex_solver_.correct_vertex(
+                nodes,
+                support,
+                initial,
+                output,
+                Scalar{0},
+                parameters_.vertex_correction_relative_tolerance,
+                parameters_.vertex_correction_max_iterations,
+                false);
+
+        if (!extended.converged) {
+            output = initial;
+            return false;
+        }
+        return true;
     }
 
     /**

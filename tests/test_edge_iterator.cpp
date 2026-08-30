@@ -1,3 +1,4 @@
+
 #include <highvoronoi/detail/hvdatabase.hpp>
 #include <highvoronoi/geometry/edge_iterator.hpp>
 #include <highvoronoi/geometry/voronoi_mesh.hpp> 
@@ -413,7 +414,7 @@ void test_degenerate_cellwise_shared_fei() {
             cell);
 
         const bool ownership_shortcut =
-            static_cast<std::size_t>(cell) >=
+            static_cast<std::size_t>(cell) >
             static_cast<std::size_t>(node_count) -
                 static_cast<std::size_t>(Dimension);
 
@@ -494,11 +495,128 @@ void test_degenerate_cellwise_shared_fei() {
         "no cube edge is returned for two different cells");
 }
 
+
+// ============================================================================
+// Degenerate boundary vertex: the last possible owner must not be skipped
+// ============================================================================
+
+void test_degenerate_boundary_last_owner() {
+    std::cout << "\n============================================================\n";
+    std::cout << "[TEST] degenerate boundary vertex: last possible owner\n";
+    std::cout << "============================================================\n";
+
+    using Mesh3 = highvoronoi::VoronoiMesh<Scalar, 3, Database>;
+    using Nodes3 = Mesh3::InternalNodes;
+    using Point3 = Mesh3::NodePoint;
+    using Boundary3 = Mesh3::BoundaryType;
+    using Sigma3 = Mesh3::Sigma;
+    using Iterator3 = highvoronoi::EdgeIterator<Mesh3::ExtendedNodes>;
+    using FEIAction3 = typename Iterator3::FEIAction;
+
+    constexpr Index side = Index{4};
+    constexpr Index node_count = side * side * side;
+
+    const auto point3 = [](Scalar x, Scalar y, Scalar z) {
+        Point3 result;
+        result << x, y, z;
+        return result;
+    };
+
+    Nodes3 nodes(node_count);
+    Index flat = Index{0};
+    for (Index z = Index{0}; z < side; ++z) {
+        for (Index y = Index{0}; y < side; ++y) {
+            for (Index x = Index{0}; x < side; ++x) {
+                nodes.set(
+                    flat++,
+                    point3(
+                        Scalar{0.2} + Scalar{0.2} * x,
+                        Scalar{0.2} + Scalar{0.2} * y,
+                        Scalar{0.2} + Scalar{0.2} * z));
+            }
+        }
+    }
+
+    const Boundary3 boundary = Boundary3::cuboid(
+        point3(Scalar{2}, Scalar{2}, Scalar{2}),
+        point3(Scalar{-1}, Scalar{-1}, Scalar{-1}),
+        std::vector<Index>{});
+
+    Mesh3 mesh(std::move(nodes), boundary, make_database());
+    auto& extended = mesh.concrete_extended_nodes();
+    Iterator3 iterator(extended);
+
+    // Exact boundary vertex found in the Cartesian completeness regression.
+    // Boundary generator 69 is the lower z-plane mirror generator.
+    const Sigma3 sigma{Index{0}, Index{1}, Index{4}, Index{5}, Index{69}};
+    const Point3 vertex = point3(Scalar{0.3}, Scalar{0.3}, Scalar{-1});
+    const std::vector<Index> active_boundary{Index{69}};
+
+    const std::vector<Index> cells{Index{0}, Index{1}, Index{4}, Index{5}};
+    const std::vector<std::size_t> expected_counts{3, 1, 1, 0};
+
+    bool target_found = false;
+
+    for (std::size_t position = 0; position < cells.size(); ++position) {
+        const Index cell = cells[position];
+
+        std::cout << "\n  [CELL " << cell << "]\n";
+        extended.activate_cell(cell, active_boundary);
+        iterator.reset(
+            sigma,
+            vertex,
+            cell,
+            typename Iterator3::OnQueueEdges{});
+
+        std::cout << "    FEI action: "
+                  << static_cast<int>(iterator.last_fei_action()) << '\n';
+
+        std::size_t edge_count = 0;
+        while (const auto edge = iterator.next()) {
+            ++edge_count;
+
+            std::vector<Index> minimal(
+                edge->indices().begin(),
+                edge->indices().end());
+            std::vector<Index> full(
+                edge->full_indices().begin(),
+                edge->full_indices().end());
+
+            std::cout << "      minimal=";
+            print_indices(minimal);
+            std::cout << " full=";
+            print_indices(full);
+            std::cout << " skip=" << edge->skip() << '\n';
+
+            if (cell == Index{4} &&
+                full == std::vector<Index>{Index{4}, Index{5}, Index{69}} &&
+                edge->skip() == Index{0}) {
+                target_found = true;
+            }
+        }
+
+        check(
+            edge_count == expected_counts[position],
+            "boundary regression cell returns the expected number of owned edges");
+
+        if (cell == Index{4}) {
+            check(
+                iterator.last_fei_action() != FEIAction3::SkippedByCellOwnership,
+                "cell 4 is not rejected by the ownership shortcut");
+        }
+    }
+
+    check(
+        target_found,
+        "cell 4 emits full edge {4,5,69} with skip 0");
+}
+
 } // namespace
 
 int main() {
     test_general_cellwise_iteration();
     test_degenerate_cellwise_shared_fei();
+    test_degenerate_boundary_last_owner();
 
     std::cout << "\n============================================================\n";
     std::cout << "performed checks: " << performed_checks << '\n';

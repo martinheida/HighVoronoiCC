@@ -667,10 +667,21 @@ struct RaycastParameters {
         std::is_same_v<Scalar, float> ? Scalar{1e-5} : Scalar{1e-12};
     Scalar ray_tolerance = Scalar{1e-12};
 
-    // Rank/verification controls for correct_vertex()/verify_vertex().
+    // Rank/verification controls for verify_vertex().
     Scalar rank_tolerance = Scalar{1e-12};
     Scalar verification_absolute_tolerance = Scalar{1e-10};
     Scalar verification_relative_tolerance = Scalar{1e-8};
+
+    // Vertex corrector:
+    // - pivot ratio below vertex_condition_tolerance -> direct Float128 fallback;
+    // - otherwise reuse one double ColPivHouseholderQR factorization until
+    //   |delta| / |r_initial-p_0| is small enough;
+    // - failure to converge within the bounded iteration count -> Float128.
+    Scalar vertex_condition_tolerance =
+        std::is_same_v<Scalar, float> ? Scalar{1e-4} : Scalar{1e-8};
+    Scalar vertex_correction_relative_tolerance =
+        std::is_same_v<Scalar, float> ? Scalar{1e-5} : Scalar{1e-12};
+    std::size_t vertex_correction_max_iterations = 3;
 
     // Julia Raycast_Original switches to full correction above these errors.
     Scalar classic_relative_error_trigger = Scalar{1e-10};

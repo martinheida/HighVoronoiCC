@@ -1,10 +1,5 @@
-#include <highvoronoi/detail/hvdatabase.hpp>
-#include <highvoronoi/geometry/compute_voronoi.hpp>
-#include <highvoronoi/geometry/mesh_validation.hpp>
-#include <highvoronoi/geometry/raycaster.hpp>
-#include <highvoronoi/geometry/search_tree_factory_crtp.hpp>
-#include <highvoronoi/geometry/voronoi_mesh.hpp>
-#include <highvoronoi/parameters.hpp>
+
+#include <highvoronoi/voronoi.hpp>
 
 #include <array>
 #include <cmath>
@@ -174,3 +169,4 @@ int main() {
 
     return complete && verification.valid() ? 0 : 1;
 }
+
