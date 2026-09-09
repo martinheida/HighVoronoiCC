@@ -28,15 +28,15 @@
 
 #include <highvoronoi/parameters.hpp>
 
-#include <highvoronoi/detail/hvdatabase.hpp>
+#include <highvoronoi/storage/hvdatabase.hpp>
 
-#include <highvoronoi/geometry/boundary.hpp>
-#include <highvoronoi/geometry/compute_voronoi.hpp>
-#include <highvoronoi/geometry/nanoflann_search_tree_crtp.hpp>
-#include <highvoronoi/geometry/raycaster.hpp>
-#include <highvoronoi/geometry/search_tree_factory_crtp.hpp>
-#include <highvoronoi/geometry/voronoi_mesh.hpp>
-#include <highvoronoi/geometry/voronoi_nodes.hpp>
+#include <highvoronoi/core/boundary.hpp>
+#include <highvoronoi/algorithm/compute_voronoi.hpp>
+#include <highvoronoi/search/nanoflann_search_tree_crtp.hpp>
+#include <highvoronoi/algorithm/raycaster.hpp>
+#include <highvoronoi/search/search_tree_factory_crtp.hpp>
+#include <highvoronoi/mesh/voronoi_mesh.hpp>
+#include <highvoronoi/core/voronoi_nodes.hpp>
 
 #include <cstddef>
 #include <cstdint>

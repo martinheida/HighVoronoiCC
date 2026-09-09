@@ -1,0 +1,90 @@
+# HighVoronoiCC documentation configuration.
+# Configured by cmake/HighVoronoiDocs.cmake.
+#
+# SCOPE RULE:
+# Doxygen receives only the explicit documentation whitelist plus the
+# HighVoronoi public/library headers enumerated by HighVoronoiDocs.cmake.
+# No other repository directories are scanned.
+
+PROJECT_NAME           = "HighVoronoiCC"
+PROJECT_NUMBER         = "@PROJECT_VERSION@"
+PROJECT_BRIEF          = "High-dimensional Voronoi construction, incremental updates, periodic/spherical domains, and integration"
+
+OUTPUT_DIRECTORY       = "@HIGHVORONOI_DOCS_OUTPUT_DIR@"
+CREATE_SUBDIRS         = NO
+ALLOW_UNICODE_NAMES    = YES
+OUTPUT_LANGUAGE        = English
+INPUT_ENCODING         = UTF-8
+
+# ---------------------------------------------------------------------------
+# Input policy
+# ---------------------------------------------------------------------------
+# HIGHVORONOI_DOXYGEN_INPUT is generated from an explicit positive list in
+# cmake/HighVoronoiDocs.cmake. Manual Markdown files and selected example
+# Markdown files are explicit inputs. HighVoronoi headers are also enumerated
+# explicitly as *.hpp files. No directory is handed to Doxygen for recursive
+# discovery, so unrelated Markdown/source files cannot leak into the manual.
+INPUT                  = @HIGHVORONOI_DOXYGEN_INPUT@
+FILE_PATTERNS          = *.md *.hpp
+RECURSIVE              = NO
+
+USE_MDFILE_AS_MAINPAGE = "@CMAKE_CURRENT_SOURCE_DIR@/docs/index.md"
+MARKDOWN_SUPPORT       = YES
+AUTOLINK_SUPPORT       = YES
+
+# Generate complete class/file indexes for the HighVoronoi headers while
+# keeping private members out of the public documentation.
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE        = NO
+EXTRACT_STATIC         = YES
+EXTRACT_LOCAL_CLASSES  = YES
+HIDE_UNDOC_MEMBERS     = NO
+HIDE_UNDOC_CLASSES     = NO
+BUILTIN_STL_SUPPORT    = YES
+SOURCE_BROWSER         = YES
+INLINE_SOURCES         = NO
+VERBATIM_HEADERS       = YES
+REFERENCED_BY_RELATION = YES
+REFERENCES_RELATION    = YES
+REFERENCES_LINK_SOURCE = YES
+
+WARNINGS               = YES
+WARN_IF_UNDOCUMENTED   = NO
+WARN_IF_DOC_ERROR      = YES
+WARN_NO_PARAMDOC       = NO
+WARN_AS_ERROR          = NO
+
+# ---------------------------------------------------------------------------
+# HTML output
+# ---------------------------------------------------------------------------
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+GENERATE_TREEVIEW      = YES
+FULL_SIDEBAR           = NO
+DISABLE_INDEX          = NO
+HTML_DYNAMIC_MENUS     = YES
+HTML_DYNAMIC_SECTIONS  = YES
+SEARCHENGINE           = YES
+SERVER_BASED_SEARCH    = NO
+
+GENERATE_LATEX         = NO
+GENERATE_XML           = NO
+GENERATE_MAN           = NO
+GENERATE_RTF           = NO
+GENERATE_DOCBOOK       = NO
+
+# Graphviz remains optional/off in this minimal upgrade. Class and file
+# indexes plus source browsing do not require graph generation.
+HAVE_DOT               = NO
+CLASS_GRAPH            = NO
+COLLABORATION_GRAPH    = NO
+GROUP_GRAPHS           = NO
+INCLUDE_GRAPH          = NO
+INCLUDED_BY_GRAPH      = NO
+CALL_GRAPH             = NO
+CALLER_GRAPH           = NO
+DIRECTORY_GRAPH        = NO
+GENERATE_LEGEND        = NO
+
+FULL_PATH_NAMES        = NO
+STRIP_FROM_PATH        = "@CMAKE_CURRENT_SOURCE_DIR@"

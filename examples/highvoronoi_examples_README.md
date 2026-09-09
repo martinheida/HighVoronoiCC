@@ -1,17 +1,10 @@
 # HighVoronoiCC examples
 
-The examples in this directory use the current public construction path:
-
-1. create the generator nodes;
-2. define a bounded domain;
-3. construct a `VoronoiMesh` and its vertex database;
-4. create a KD-tree nearest-neighbour backend;
-5. create the appropriate `RayCaster`;
-6. run `ComputeVoronoi` in serial mode;
-7. validate the stored vertices with `verify_mesh`.
-
-Both examples are deterministic and are derived from regression configurations
-used by the test suite.
+The examples in this directory are small user-facing workflows for the current
+construction, incremental, spherical, parallel, periodic, and integration APIs.
+They deliberately keep diagnostics lighter than the regression suite: examples
+show the recommended API path, while tests cover the stronger invariants and
+corner cases.
 
 ## General position
 
@@ -63,6 +56,36 @@ cmake --build build/release --target highvoronoi_example_cubic_grid
 ./build/release/highvoronoi_example_cubic_grid
 ```
 
+## Spherical construction
+
+`spherical/spherical_refine_remove.cpp` constructs a Voronoi diagram on `S^2`
+through `SphereVoronoiMesh`. It demonstrates the intended spherical lifecycle:
+initial `compute()`, later `refine()`, and `remove()`. Public vertices are
+checked to remain on the unit sphere. Spherical integration is intentionally
+not demonstrated because it is not yet part of the integration API.
+
+Build and run it with:
+
+```bash
+cmake --build build/release --target example_spherical_refine_remove
+./build/release/example_spherical_refine_remove
+```
+
+## Volume and interface integration
+
+`integration/fast_polygon.cpp` constructs a bounded `2 x 2 x 2` Cartesian
+Voronoi mesh in the unit cube, computes cell volumes and interface measures with
+the ordinary `PolygonAlgorithm`, then repeats the calculation with parallel
+`FastPolygon`. The example compares both result sets and prints FastPolygon's
+shared facet-cache statistics.
+
+Build and run it with:
+
+```bash
+cmake --build build/release --target example_fast_polygon_integration
+./build/release/example_fast_polygon_integration
+```
+
 ## Building all examples
 
 Configure the project with examples enabled and build normally:
@@ -75,5 +98,5 @@ cmake -S . -B build/release \
 cmake --build build/release
 ```
 
-The examples currently use the serial construction path. Parallel construction
-is part of the development roadmap and is intentionally not demonstrated here.
+Parallel construction examples live under `examples/parallel/`; parallel
+integration is demonstrated independently by `examples/integration/fast_polygon.cpp`.

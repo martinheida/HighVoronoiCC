@@ -1,4 +1,5 @@
 
+
 #include <highvoronoi/voronoi.hpp>
 
 #include <array>
@@ -16,9 +17,7 @@ using Index = std::uint32_t;
 inline constexpr int Dimension = 4;
 
 using DatabaseParameters = highvoronoi::DataBaseParams<Scalar, Index>;
-using Database = highvoronoi::HVDataBase<
-    highvoronoi::EmptyLock,
-    DatabaseParameters>;
+using Database = highvoronoi::HVDataBase<highvoronoi::EmptyLock, DatabaseParameters, Dimension>;
 using Mesh = highvoronoi::VoronoiMesh<Scalar, Dimension, Database>;
 using Nodes = Mesh::InternalNodes;
 using Point = Mesh::VertexPoint;
@@ -169,4 +168,6 @@ int main() {
 
     return complete && verification.valid() ? 0 : 1;
 }
+
+
 

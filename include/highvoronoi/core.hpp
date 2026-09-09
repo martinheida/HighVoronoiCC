@@ -14,6 +14,6 @@
 #include <highvoronoi/database.hpp>
 #include <highvoronoi/parameters.hpp>
 
-#include <highvoronoi/geometry/point.hpp>
-#include <highvoronoi/geometry/boundary.hpp>
-#include <highvoronoi/geometry/voronoi_nodes.hpp>
+#include <highvoronoi/core/point.hpp>
+#include <highvoronoi/core/boundary.hpp>
+#include <highvoronoi/core/voronoi_nodes.hpp>

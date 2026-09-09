@@ -11,6 +11,6 @@
 
 #include <highvoronoi/core.hpp>
 
-#include <highvoronoi/geometry/compute_mesh_engine.hpp>
-#include <highvoronoi/geometry/compute_mesh.hpp>
-#include <highvoronoi/geometry/cuboid_mesh_engine.hpp>
+#include <highvoronoi/mesh/engine/compute_mesh_engine.hpp>
+#include <highvoronoi/mesh/engine/compute_mesh.hpp>
+#include <highvoronoi/mesh/engine/cuboid_mesh_engine.hpp>

@@ -1,3 +1,5 @@
+
+
 #include <highvoronoi/voronoi.hpp>
 
 #include <cstdint>
@@ -13,16 +15,16 @@ using Index = std::uint32_t;
 inline constexpr int Dimension = 3;
 
 using DatabaseParameters = highvoronoi::DataBaseParams<Scalar, Index>;
-using Database = highvoronoi::HVDataBase<
-    highvoronoi::EmptyLock,
-    DatabaseParameters>;
+using Database = highvoronoi::HVDataBase<highvoronoi::EmptyLock, DatabaseParameters, Dimension>;
 using Mesh = highvoronoi::VoronoiMesh<Scalar, Dimension, Database>;
 using Nodes = Mesh::InternalNodes;
 using Point = Mesh::NodePoint;
 using Boundary = Mesh::BoundaryType;
 
+// The ordinary public default is CombinedRaycast. Keep the example on the
+// default path rather than explicitly selecting the legacy InRange variant.
 using RayParameters = highvoronoi::RaycastParameters<
-    highvoronoi::InRangeRaycast,
+    highvoronoi::CombinedRaycast,
     Scalar>;
 
 inline constexpr std::size_t DatabaseUnits = 65536;
@@ -213,3 +215,6 @@ int main() {
 
     return print_and_check_complete(mesh, "after remove") ? 0 : 1;
 }
+
+
+

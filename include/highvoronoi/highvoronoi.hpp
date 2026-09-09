@@ -1,3 +1,4 @@
+
 #pragma once
 
 /**
@@ -18,3 +19,4 @@
 #include <highvoronoi/voronoi.hpp>
 #include <highvoronoi/high_voronoi.hpp>
 #include <highvoronoi/mesh_engines.hpp>
+#include <highvoronoi/spherical_voronoi.hpp>

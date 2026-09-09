@@ -9,5 +9,5 @@
  * header instead of depending on the physical detail/ path.
  */
 
-#include <highvoronoi/detail/hvdatabase.hpp>
-#include <highvoronoi/detail/hybrid_database.hpp>
+#include <highvoronoi/storage/hvdatabase.hpp>
+#include <highvoronoi/storage/hybrid_database.hpp>

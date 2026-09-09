@@ -1,3 +1,4 @@
+
 #pragma once
 /**
  * @file parameters.hpp
@@ -212,12 +213,12 @@
  * @endcode
  */
 
-#include <highvoronoi/detail/edge_hash_table.hpp>
-#include <highvoronoi/detail/hash_functions.hpp>
-#include <highvoronoi/detail/hash_generators.hpp>
-#include <highvoronoi/detail/locks.hpp>
-#include <highvoronoi/detail/queue_hash_table.hpp>
-#include <highvoronoi/detail/queue_hash_table_2.hpp>
+#include <highvoronoi/storage/hash/edge_hash_table.hpp>
+#include <highvoronoi/storage/hash/hash_functions.hpp>
+#include <highvoronoi/storage/hash/hash_generators.hpp>
+#include <highvoronoi/core/detail/locks.hpp>
+#include <highvoronoi/storage/hash/queue_hash_table.hpp>
+#include <highvoronoi/storage/hash/queue_hash_table_2.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -507,7 +508,8 @@ using EdgeTable =
  *     Concrete queue-table implementation. The default is QueueTable, which
  *     resolves to QueueHashTable_2.
  *
- * Default configuration:
+ * Default configuration (`double`, `std::uint32_t`, original FNV64/128
+ * generator, one DirectHash table, current QueueTable implementation):
  *
  * @code{.cpp}
  * using Params = highvoronoi::DataBaseParams<>;
@@ -543,7 +545,7 @@ using EdgeTable =
  */
 template<
     class ScalarType = double,
-    class IndexType = std::int64_t,
+    class IndexType = std::uint32_t,
     class HashGeneratorType = FNV64_128HashGenerator,
     class ContainerModeType = DirectHash,
     template<class, class> class QueueTableTemplate = QueueTable
@@ -648,7 +650,23 @@ struct ClassicRaycast {};
 /** @brief Select the in-range RayCaster for potentially degenerate vertices. */
 struct InRangeRaycast {};
 
-template <class MethodT = InRangeRaycast, class ScalarT = double>
+/**
+ * @brief Select the Julia-faithful fused KD-tree / raycast algorithm.
+ *
+ * This corresponds to HighVoronoi.jl `Raycast_Combined`. The specialised
+ * nanoflann traversal may move the current ray endpoint and restart from the
+ * KD-tree root while preserving caller-owned visited-subtree state.
+ */
+struct CombinedRaycast {};
+
+/**
+ * @brief Common ray-caster parameters.
+ *
+ * The public default method is CombinedRaycast. ClassicRaycast and
+ * InRangeRaycast remain explicit alternatives. CombinedRaycast itself uses
+ * its robust fallback policy by default.
+ */
+template <class MethodT = CombinedRaycast, class ScalarT = double>
 struct RaycastParameters {
     static_assert(
         std::is_floating_point_v<ScalarT>,
@@ -672,6 +690,11 @@ struct RaycastParameters {
     Scalar verification_absolute_tolerance = Scalar{1e-10};
     Scalar verification_relative_tolerance = Scalar{1e-8};
 
+    // Julia uses semantic verify_vertex() for descent bootstrap only.  Keep
+    // the stronger per-WalkRay verification available as an opt-in diagnostic,
+    // but do not pay for it in the normal construction hot path.
+    bool verify_walk_vertices = false;
+
     // Vertex corrector:
     // - pivot ratio below vertex_condition_tolerance -> direct Float128 fallback;
     // - otherwise reuse one double ColPivHouseholderQR factorization until
@@ -692,3 +715,4 @@ struct RaycastParameters {
 };
 
 } // namespace highvoronoi
+

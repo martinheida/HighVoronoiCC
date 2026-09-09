@@ -1,3 +1,4 @@
+
 #include <highvoronoi/high_voronoi.hpp>
 
 #include <cstdint>
@@ -12,9 +13,7 @@ using Index = std::uint32_t;
 inline constexpr int Dimension = 3;
 
 using DatabaseParameters = highvoronoi::DataBaseParams<Scalar, Index>;
-using Database = highvoronoi::HVDataBase<
-    highvoronoi::EmptyLock,
-    DatabaseParameters>;
+using Database = highvoronoi::HVDataBase<highvoronoi::EmptyLock, DatabaseParameters, Dimension>;
 using HighMesh = highvoronoi::HighVoronoiMesh<
     Scalar,
     Dimension,
@@ -211,3 +210,5 @@ int main() {
 
     return print_and_check_complete(mesh, "after remove") ? 0 : 1;
 }
+
+

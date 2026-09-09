@@ -1,3 +1,4 @@
+
 /**
  * @file parallel_combined.cpp
  * @brief Combine mesh-branch and worker-level Voronoi parallelism.
@@ -9,12 +10,12 @@
  * and two workers per branch.  In larger applications the useful split should
  * be selected by profiling rather than by simply maximizing both numbers.
  */
-#include <highvoronoi/detail/hvdatabase.hpp>
-#include <highvoronoi/geometry/compute_voronoi.hpp>
-#include <highvoronoi/geometry/mesh_validation.hpp>
-#include <highvoronoi/geometry/raycaster.hpp>
-#include <highvoronoi/geometry/search_tree_factory_crtp.hpp>
-#include <highvoronoi/geometry/voronoi_mesh.hpp>
+#include <highvoronoi/storage/hvdatabase.hpp>
+#include <highvoronoi/algorithm/compute_voronoi.hpp>
+#include <highvoronoi/mesh/validation/mesh_validation.hpp>
+#include <highvoronoi/algorithm/raycaster.hpp>
+#include <highvoronoi/search/search_tree_factory_crtp.hpp>
+#include <highvoronoi/mesh/voronoi_mesh.hpp>
 #include <highvoronoi/parameters.hpp>
 
 #include <chrono>
@@ -64,9 +65,7 @@ using EdgeParameters = highvoronoi::EdgeBufferParams<
     highvoronoi::StaticHash<16>>;
 
 // Any parallel construction requires a thread-safe persistent database.
-using Database = highvoronoi::HVDataBase<
-    highvoronoi::ReadWriteLock,
-    DatabaseParameters>;
+using Database = highvoronoi::HVDataBase<highvoronoi::ReadWriteLock, DatabaseParameters, Dimension>;
 
 using Mesh = highvoronoi::VoronoiMesh<Scalar, Dimension, Database>;
 using Nodes = Mesh::InternalNodes;
@@ -226,3 +225,5 @@ int main() {
         highvoronoi::MultiThread{MeshThreads},
         highvoronoi::MultiThread{WorkerThreads});
 }
+
+
