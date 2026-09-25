@@ -16,11 +16,7 @@ The complete user and developer manual is maintained under `docs/` and built as 
 - [Integration API: Level 1-3 comparison](docs/integration_level_1_3_api_comparison.md)
 - [Developer test overview](docs/test_overview_developers.md)
 
-<!--
-After the first GitHub Pages deployment, add the public HTML manual here, e.g.
-**HTML manual:** https://<github-owner>.github.io/HighVoronoiCC/
-Use the actual Pages URL configured for the repository; do not guess the owner.
--->
+**HTML manual:** https://martinheida.github.io/HighVoronoiCC/
 
 ## Quick start
 
